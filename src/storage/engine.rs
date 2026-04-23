@@ -6,4 +6,5 @@ pub trait KvEngine: Send + Sync {
     fn set(&self, key: String, value: ValueEntry) -> Result<(), EngineError>;
     fn del(&self, key: &str) -> Result<bool, EngineError>;
     fn incr(&self, key: &str) -> Result<i64, EngineError>;
+    fn len(&self) -> usize;
 }

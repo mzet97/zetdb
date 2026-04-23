@@ -19,6 +19,11 @@ pub enum Response {
 }
 
 impl Response {
+    /// Returns true if the response is not an error.
+    pub fn is_success(&self) -> bool {
+        !matches!(self, Response::Error(_))
+    }
+
     /// Writes serialized response directly into buffer — zero allocation for
     /// Pong, Ok, Integer, and Value(None). The buffer must have sufficient
     /// capacity or it will grow.
@@ -34,8 +39,8 @@ impl Response {
             Self::Value(None) => buf.extend_from_slice(b"$-1\r\n"),
             Self::Integer(n) => {
                 buf.extend_from_slice(b":");
-                let s = n.to_string();
-                buf.extend_from_slice(s.as_bytes());
+                let mut itoa_buf = itoa::Buffer::new();
+                buf.extend_from_slice(itoa_buf.format(*n).as_bytes());
                 buf.extend_from_slice(b"\r\n");
             }
             Self::Error(ResponseError::UnknownCommand(cmd)) => {

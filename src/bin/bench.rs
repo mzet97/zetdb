@@ -94,7 +94,7 @@ async fn main() {
 
     let server_engine = engine.clone();
     tokio::spawn(async move {
-        let _ = run_server(config, server_engine).await;
+        let _ = run_server(config, server_engine, None).await;
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 

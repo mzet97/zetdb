@@ -1,4 +1,5 @@
 use crate::domain::command::Command;
+use crate::observability::metrics::{self, CommandType};
 use crate::protocol::response::{Response, ResponseError};
 use crate::storage::engine::KvEngine;
 
@@ -28,6 +29,35 @@ pub fn dispatch(engine: &dyn KvEngine, cmd: Command) -> Response {
             Ok(n) => Response::Integer(n),
             Err(e) => Response::Error(ResponseError::TypeError(e.to_string())),
         },
+        Command::Info => {
+            let m = metrics::metrics();
+            let uptime = m.uptime_secs();
+            let info = format!(
+                "# Server\r\nzetdb_version:0.1.0\r\nuptime_in_seconds:{uptime}\r\n\r\n\
+                 # Clients\r\nconnected_clients:{}\r\ntotal_connections:{}\r\n\r\n\
+                 # Stats\r\ntotal_commands:{}\r\n\
+                 cmd_ping:{}\r\ncmd_get:{}\r\ncmd_set:{}\r\n\
+                 cmd_del:{}\r\ncmd_incr:{}\r\ncmd_info:{}\r\ncmd_dbsize:{}\r\n\
+                 keyspace_hits:{}\r\nkeyspace_misses:{}\r\nerrors_total:{}\r\n\r\n\
+                 # Keyspace\r\ndb0:keys={}\r\n",
+                m.connections_active.load(std::sync::atomic::Ordering::Relaxed),
+                m.connections_total.load(std::sync::atomic::Ordering::Relaxed),
+                m.commands_total.load(std::sync::atomic::Ordering::Relaxed),
+                m.command_count(CommandType::Ping),
+                m.command_count(CommandType::Get),
+                m.command_count(CommandType::Set),
+                m.command_count(CommandType::Del),
+                m.command_count(CommandType::Incr),
+                m.command_count(CommandType::Info),
+                m.command_count(CommandType::DbSize),
+                m.keyspace_hits.load(std::sync::atomic::Ordering::Relaxed),
+                m.keyspace_misses.load(std::sync::atomic::Ordering::Relaxed),
+                m.errors_total.load(std::sync::atomic::Ordering::Relaxed),
+                engine.len(),
+            );
+            Response::Value(Some(bytes::Bytes::from(info)))
+        }
+        Command::DbSize => Response::Integer(engine.len() as i64),
     }
 }
 
@@ -83,6 +113,10 @@ mod tests {
             let new_val = val + 1;
             entry.data = Bytes::from(new_val.to_string());
             Ok(new_val)
+        }
+
+        fn len(&self) -> usize {
+            self.map.lock().unwrap().len()
         }
     }
 

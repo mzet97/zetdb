@@ -2,6 +2,7 @@ use bytes::Bytes;
 use dashmap::mapref::entry::Entry;
 #[cfg(test)]
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::domain::errors::EngineError;
 use crate::domain::value::ValueEntry;
@@ -20,6 +21,35 @@ impl DashMapEngine {
 
     pub fn sweep_expired(&self) {
         self.map.retain(|_, v| !v.is_expired());
+    }
+
+    /// Iterate over non-expired entries for snapshot dump.
+    /// Calls `f(key, value_bytes, ttl_remaining_ms)` for each live entry.
+    /// `ttl_remaining_ms` is -1 for no TTL, or remaining milliseconds.
+    pub fn dump_entries<F>(&self, mut f: F) -> usize
+    where
+        F: FnMut(&str, &[u8], i64),
+    {
+        let now = Instant::now();
+        let mut count = 0;
+        for entry in self.map.iter() {
+            let expires_at = entry.value().expires_at;
+            if let Some(exp) = expires_at {
+                if now >= exp {
+                    continue;
+                }
+            }
+            let remaining = match expires_at {
+                Some(exp) => {
+                    let ms = (exp - now).as_millis() as i64;
+                    if ms > 0 { ms } else { -1 }
+                }
+                None => -1,
+            };
+            f(entry.key(), &entry.value().data, remaining);
+            count += 1;
+        }
+        count
     }
 }
 
@@ -63,7 +93,7 @@ impl KvEngine for DashMapEngine {
                 if occ.get().is_expired() {
                     occ.remove();
                     self.map
-                        .insert(key.to_string(), ValueEntry::new(Bytes::from("1")));
+                        .insert(key.to_string(), ValueEntry::new(Bytes::from_static(b"1")));
                     return Ok(1);
                 }
 
@@ -72,14 +102,19 @@ impl KvEngine for DashMapEngine {
                     .map_err(|_| EngineError::NotAnInteger(key.to_string()))?;
 
                 let new_val = val + 1;
-                occ.get_mut().data = Bytes::from(new_val.to_string());
+                let mut itoa_buf = itoa::Buffer::new();
+                occ.get_mut().data = Bytes::copy_from_slice(itoa_buf.format(new_val).as_bytes());
                 Ok(new_val)
             }
             Entry::Vacant(vac) => {
-                vac.insert(ValueEntry::new(Bytes::from("1")));
+                vac.insert(ValueEntry::new(Bytes::from_static(b"1")));
                 Ok(1)
             }
         }
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
     }
 }
 

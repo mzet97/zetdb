@@ -4,12 +4,18 @@ use tokio::net::TcpListener;
 
 use crate::config::Config;
 use crate::server::session::handle_session;
+use crate::storage::aof::AofWriter;
 use crate::storage::engine::KvEngine;
 
-pub async fn run_server(config: Config, engine: Arc<dyn KvEngine>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_server(
+    config: Config,
+    engine: Arc<dyn KvEngine>,
+    aof: Option<Arc<AofWriter>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind((config.bind_addr.as_str(), config.port)).await?;
     let local_addr = listener.local_addr()?;
     let read_timeout = config.read_timeout;
+    let metrics_enabled = config.metrics_enabled;
 
     log::info!("ZetDB listening on {local_addr}");
     log::info!("read timeout: {read_timeout:?}");
@@ -17,8 +23,9 @@ pub async fn run_server(config: Config, engine: Arc<dyn KvEngine>) -> Result<(),
     loop {
         let (stream, peer) = listener.accept().await?;
         let engine = engine.clone();
+        let aof = aof.clone();
         tokio::spawn(async move {
-            handle_session(stream, peer, engine, read_timeout).await;
+            handle_session(stream, peer, engine, read_timeout, aof, metrics_enabled).await;
         });
     }
 }
@@ -74,7 +81,7 @@ mod tests {
         let config = test_config(port);
         let engine = Arc::new(DashMapEngine::new());
         let handle = tokio::spawn(async move {
-            let _ = run_server(config, engine).await;
+            let _ = run_server(config, engine, None).await;
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         handle
@@ -182,11 +189,11 @@ mod tests {
             bind_addr: "127.0.0.1".into(),
             port,
             read_timeout: Duration::from_millis(100),
-            sweep_interval: Duration::from_secs(1),
+            ..Default::default()
         };
         let engine = Arc::new(DashMapEngine::new());
         let server = tokio::spawn(async move {
-            let _ = run_server(config, engine).await;
+            let _ = run_server(config, engine, None).await;
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
 

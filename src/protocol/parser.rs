@@ -47,6 +47,12 @@ pub fn parse_bytes(input: &[u8]) -> Result<Command, ParseError> {
     if eq_ignore_ascii_case(verb, b"INCR") {
         return parse_incr_bytes(rest);
     }
+    if eq_ignore_ascii_case(verb, b"INFO") {
+        return Ok(Command::Info);
+    }
+    if eq_ignore_ascii_case(verb, b"DBSIZE") {
+        return Ok(Command::DbSize);
+    }
 
     Err(ParseError::UnknownCommand(
         String::from_utf8_lossy(verb).into_owned(),
@@ -192,32 +198,117 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
     if count > 1024 {
         return Err(ParseError::SyntaxError("RESP: array too large".into()));
     }
+    if count == 0 {
+        return Err(ParseError::EmptyCommand);
+    }
 
-    let mut args: Vec<&[u8]> = Vec::with_capacity(count);
+    // Parse first bulk string (verb) — zero alloc
+    let (verb, n) = match read_resp_bulk(&buf[pos..])? {
+        Some(v) => v,
+        None => return Ok(FrameResult::Incomplete),
+    };
+    pos += n;
+    let args_remaining = count - 1;
 
-    for _ in 0..count {
-        // Bulk string header: $<len>\r\n
-        let (len, n) = match read_resp_line_int(&buf[pos..], b'$')? {
+    // Switch on verb and parse args inline — no Vec allocation
+    if eq_ignore_ascii_case(verb, b"PING") {
+        return Ok(FrameResult::Complete { consumed: pos, command: Command::Ping });
+    }
+    if eq_ignore_ascii_case(verb, b"INFO") {
+        return Ok(FrameResult::Complete { consumed: pos, command: Command::Info });
+    }
+    if eq_ignore_ascii_case(verb, b"DBSIZE") {
+        return Ok(FrameResult::Complete { consumed: pos, command: Command::DbSize });
+    }
+    if eq_ignore_ascii_case(verb, b"GET") {
+        if args_remaining != 1 {
+            return Err(ParseError::SyntaxError(
+                "GET requires exactly 1 argument: GET <key>".into(),
+            ));
+        }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
             Some(v) => v,
             None => return Ok(FrameResult::Incomplete),
         };
         pos += n;
-
-        if len < 0 {
-            // Null bulk string — treat as empty
-            args.push(&buf[..0]);
-        } else {
-            let len = len as usize;
-            if pos + len + 2 > buf.len() {
-                return Ok(FrameResult::Incomplete);
-            }
-            args.push(&buf[pos..pos + len]);
-            pos += len + 2; // data + \r\n
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Get {
+                key: bytes_to_string(key_data),
+            },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"SET") {
+        if args_remaining < 2 {
+            return Err(ParseError::SyntaxError(
+                "SET requires at least 2 arguments: SET <key> <value>".into(),
+            ));
         }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        let (val_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        // Skip any extra args (future: PX support)
+        for _ in 2..args_remaining {
+            let (_, n) = match read_resp_bulk(&buf[pos..])? {
+                Some(v) => v,
+                None => return Ok(FrameResult::Incomplete),
+            };
+            pos += n;
+        }
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Set {
+                key: bytes_to_string(key_data),
+                value: Bytes::copy_from_slice(val_data),
+                ttl: None,
+            },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"DEL") {
+        if args_remaining != 1 {
+            return Err(ParseError::SyntaxError(
+                "DEL requires exactly 1 argument: DEL <key>".into(),
+            ));
+        }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Del {
+                key: bytes_to_string(key_data),
+            },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"INCR") {
+        if args_remaining != 1 {
+            return Err(ParseError::SyntaxError(
+                "INCR requires exactly 1 argument: INCR <key>".into(),
+            ));
+        }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Incr {
+                key: bytes_to_string(key_data),
+            },
+        });
     }
 
-    let cmd = resp_args_to_command(&args)?;
-    Ok(FrameResult::Complete { consumed: pos, command: cmd })
+    Err(ParseError::UnknownCommand(bytes_to_string(verb)))
 }
 
 /// Parse a RESP integer line like `*3\r\n` or `$5\r\n`.
@@ -253,60 +344,26 @@ fn read_resp_line_int(buf: &[u8], prefix: u8) -> Result<Option<(i64, usize)>, Pa
     }
 }
 
-fn resp_args_to_command(args: &[&[u8]]) -> Result<Command, ParseError> {
-    if args.is_empty() {
-        return Err(ParseError::EmptyCommand);
-    }
+/// Parse a single RESP bulk string: `$<len>\r\n<data>\r\n`.
+/// Returns `(data_slice, bytes_consumed)` or `None` if incomplete.
+fn read_resp_bulk(buf: &[u8]) -> Result<Option<(&[u8], usize)>, ParseError> {
+    let (len, n) = match read_resp_line_int(buf, b'$')? {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let mut pos = n;
 
-    let verb = args[0];
-
-    if eq_ignore_ascii_case(verb, b"PING") {
-        return Ok(Command::Ping);
+    if len < 0 {
+        // Null bulk string
+        return Ok(Some((&buf[..0], pos)));
     }
-    if eq_ignore_ascii_case(verb, b"GET") {
-        if args.len() != 2 {
-            return Err(ParseError::SyntaxError(
-                "GET requires exactly 1 argument: GET <key>".into(),
-            ));
-        }
-        return Ok(Command::Get {
-            key: bytes_to_string(args[1]),
-        });
+    let len = len as usize;
+    if pos + len + 2 > buf.len() {
+        return Ok(None);
     }
-    if eq_ignore_ascii_case(verb, b"SET") {
-        if args.len() < 3 {
-            return Err(ParseError::SyntaxError(
-                "SET requires at least 2 arguments: SET <key> <value>".into(),
-            ));
-        }
-        return Ok(Command::Set {
-            key: bytes_to_string(args[1]),
-            value: Bytes::copy_from_slice(args[2]),
-            ttl: None,
-        });
-    }
-    if eq_ignore_ascii_case(verb, b"DEL") {
-        if args.len() != 2 {
-            return Err(ParseError::SyntaxError(
-                "DEL requires exactly 1 argument: DEL <key>".into(),
-            ));
-        }
-        return Ok(Command::Del {
-            key: bytes_to_string(args[1]),
-        });
-    }
-    if eq_ignore_ascii_case(verb, b"INCR") {
-        if args.len() != 2 {
-            return Err(ParseError::SyntaxError(
-                "INCR requires exactly 1 argument: INCR <key>".into(),
-            ));
-        }
-        return Ok(Command::Incr {
-            key: bytes_to_string(args[1]),
-        });
-    }
-
-    Err(ParseError::UnknownCommand(bytes_to_string(verb)))
+    let data = &buf[pos..pos + len];
+    pos += len + 2;
+    Ok(Some((data, pos)))
 }
 
 // --- Byte helpers ---
@@ -339,8 +396,8 @@ fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 }
 
 fn bytes_to_string(b: &[u8]) -> String {
-    // SAFETY: keys in our protocol are always valid UTF-8
-    String::from_utf8_lossy(b).into_owned()
+    // SAFETY: keys in our protocol are always valid UTF-8 (delimited by \r\n, no null bytes)
+    unsafe { String::from_utf8_unchecked(b.to_vec()) }
 }
 
 #[cfg(test)]

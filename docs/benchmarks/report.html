@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZetDB Benchmark Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 2rem; }
+h1 { color: #58a6ff; font-size: 2rem; margin-bottom: 0.5rem; }
+h2 { color: #79c0ff; font-size: 1.4rem; margin: 2rem 0 1rem; border-bottom: 1px solid #21262d; padding-bottom: 0.5rem; }
+h3 { color: #d2a8ff; font-size: 1.1rem; margin: 1.5rem 0 0.75rem; }
+.subtitle { color: #8b949e; margin-bottom: 2rem; }
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
+.chart-box { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 1rem; }
+.chart-box canvas { width: 100% !important; height: 350px !important; }
+.full-width { grid-column: 1 / -1; }
+.full-width canvas { height: 400px !important; }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; background: #161b22; border-radius: 8px; overflow: hidden; }
+th, td { padding: 0.6rem 1rem; text-align: right; border-bottom: 1px solid #21262d; }
+th { background: #21262d; color: #79c0ff; font-weight: 600; text-align: center; }
+td:first-child, th:first-child { text-align: left; }
+tr:hover { background: #1c2128; }
+.highlight { color: #7ee787; font-weight: 700; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1.5rem 0; }
+.stat-card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 1.2rem; text-align: center; }
+.stat-card .value { font-size: 1.8rem; font-weight: 700; }
+.stat-card .label { font-size: 0.85rem; color: #8b949e; margin-top: 0.3rem; }
+.green { color: #7ee787; }
+.blue { color: #58a6ff; }
+.red { color: #f85149; }
+.orange { color: #ffa657; }
+footer { margin-top: 3rem; text-align: center; color: #484f58; font-size: 0.85rem; border-top: 1px solid #21262d; padding-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>ZetDB Benchmark Report</h1>
+<p class="subtitle">ZetDB (Rust) vs Redis — Pipeline throughput comparison | Duration: 5s/test | Protocol: RESP</p>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="value green">12.16M</div>
+    <div class="label">ZetDB GET peak (WSL)</div>
+  </div>
+  <div class="stat-card">
+    <div class="value blue">7.63M</div>
+    <div class="label">ZetDB SET peak (WSL)</div>
+  </div>
+  <div class="stat-card">
+    <div class="value red">2.74M</div>
+    <div class="label">Redis GET peak (WSL)</div>
+  </div>
+  <div class="stat-card">
+    <div class="value orange">1.16M</div>
+    <div class="label">Redis SET peak (WSL)</div>
+  </div>
+</div>
+
+<h2>SET (Write) — Pipeline Scaling</h2>
+<div class="chart-grid">
+  <div class="chart-box"><h3>SET: Scaling by Pipeline Size (clients=4)</h3><canvas id="setPipeScale"></canvas></div>
+  <div class="chart-box"><h3>SET: Scaling by Clients (pipe=100)</h3><canvas id="setClientScale"></canvas></div>
+</div>
+
+<h2>GET (Read) — Pipeline Scaling</h2>
+<div class="chart-grid">
+  <div class="chart-box"><h3>GET: Scaling by Pipeline Size (clients=4)</h3><canvas id="getPipeScale"></canvas></div>
+  <div class="chart-box"><h3>GET: Scaling by Clients (pipe=100)</h3><canvas id="getClientScale"></canvas></div>
+</div>
+
+<h2>Full Comparison — Grouped Bars</h2>
+<div class="chart-grid">
+  <div class="chart-box full-width"><h3>SET: All Configurations (ops/s)</h3><canvas id="setAll"></canvas></div>
+  <div class="chart-box full-width"><h3>GET: All Configurations (ops/s)</h3><canvas id="getAll"></canvas></div>
+</div>
+
+<h2>Data Tables</h2>
+<h3>SET — ZetDB vs Redis (ops/s)</h3>
+<table><thead><tr><th>Config</th><th>ZetDB</th><th>Redis</th><th>ZetDB/Redis</th></tr></thead><tbody id="setBody"></tbody></table>
+
+<h3>GET — ZetDB vs Redis (ops/s)</h3>
+<table><thead><tr><th>Config</th><th>ZetDB</th><th>Redis</th><th>ZetDB/Redis</th></tr></thead><tbody id="getBody"></tbody></table>
+
+<footer>ZetDB v0.1.0 | Rust (stable) | Tokio runtime | DashMap storage | Benchmarked with redis_compare.rs</footer>
+
+<script>
+const pipes = [1, 10, 50, 100, 200, 500];
+const clients = [1, 4, 16, 32];
+
+const zetdbWslSet = [11132,41386,146949,213291, 97940,288724,1074358,1338018, 272740,661350,2110030,1712770, 272240,790880,4951740,5041340, 359200,1401160,6719400,5247480, 368900,2584500,7633100,4557600];
+const redisWslSet = [5345,13353,30837,43760, 47464,128620,269990,333674, 151580,329240,551190,791370, 248560,469160,928240,861200, 243520,556040,1070480,1029280, 501000,1115400,1156600,991200];
+
+const zetdbWslGet = [5083,30456,96702,70943, 83978,255352,696270,1265444, 325790,840420,1922210,5712030, 421520,1181820,2794220,8501480, 551280,1435040,5860200,11036400, 645600,1454000,8732100,12162300];
+const redisWslGet = [687764,2728043,2670315,1571449, 1460970,2741038,2505324,1453444, 1996060,2365790,2053760,1847800, 1519900,1860220,1946580,2084460, 1280040,1611320,2405560,2194040, 900600,1432000,2392100,1996300];
+
+function fmt(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return n.toString();
+}
+
+function idx(pipe, client) {
+  return pipes.indexOf(pipe) * 4 + clients.indexOf(client);
+}
+
+const colors = {
+  zw: { bg: 'rgba(63,185,80,0.8)', border: '#3fb950' },
+  rw: { bg: 'rgba(248,81,73,0.8)', border: '#f85149' }
+};
+
+function ds(label, data, c) {
+  return { label, data, backgroundColor: c.bg, borderColor: c.border, borderWidth: 1 };
+}
+
+const baseOpts = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { labels: { color: '#c9d1d9' } } },
+  scales: {
+    x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+    y: {
+      type: 'logarithmic',
+      ticks: { color: '#8b949e', callback: function(v) { if (v>=1e6) return (v/1e6)+'M'; if (v>=1e3) return (v/1e3)+'K'; return v; } },
+      grid: { color: '#21262d' }
+    }
+  }
+};
+
+// ── SET Charts ──
+new Chart(document.getElementById('setPipeScale'), {
+  type: 'bar',
+  data: { labels: pipes.map(p => 'pipe='+p), datasets: [
+    ds('ZetDB', pipes.map(p => zetdbWslSet[idx(p,4)]), colors.zw),
+    ds('Redis', pipes.map(p => redisWslSet[idx(p,4)]), colors.rw)
+  ]},
+  options: baseOpts
+});
+
+new Chart(document.getElementById('setClientScale'), {
+  type: 'bar',
+  data: { labels: clients.map(c => 'c='+c), datasets: [
+    ds('ZetDB', clients.map(c => zetdbWslSet[idx(100,c)]), colors.zw),
+    ds('Redis', clients.map(c => redisWslSet[idx(100,c)]), colors.rw)
+  ]},
+  options: baseOpts
+});
+
+// ── GET Charts ──
+new Chart(document.getElementById('getPipeScale'), {
+  type: 'bar',
+  data: { labels: pipes.map(p => 'pipe='+p), datasets: [
+    ds('ZetDB', pipes.map(p => zetdbWslGet[idx(p,4)]), colors.zw),
+    ds('Redis', pipes.map(p => redisWslGet[idx(p,4)]), colors.rw)
+  ]},
+  options: baseOpts
+});
+
+new Chart(document.getElementById('getClientScale'), {
+  type: 'bar',
+  data: { labels: clients.map(c => 'c='+c), datasets: [
+    ds('ZetDB', clients.map(c => zetdbWslGet[idx(100,c)]), colors.zw),
+    ds('Redis', clients.map(c => redisWslGet[idx(100,c)]), colors.rw)
+  ]},
+  options: baseOpts
+});
+
+// ── All configs ──
+const allLabels = [];
+for (const p of pipes) for (const c of clients) allLabels.push('p'+p+'c'+c);
+const allOpts = { ...baseOpts, scales: { ...baseOpts.scales, x: { ...baseOpts.scales.x, ticks: { color: '#8b949e', maxRotation: 45 } } } };
+
+new Chart(document.getElementById('setAll'), {
+  type: 'bar',
+  data: { labels: allLabels, datasets: [
+    ds('ZetDB', zetdbWslSet, colors.zw),
+    ds('Redis', redisWslSet, colors.rw)
+  ]},
+  options: allOpts
+});
+
+new Chart(document.getElementById('getAll'), {
+  type: 'bar',
+  data: { labels: allLabels, datasets: [
+    ds('ZetDB', zetdbWslGet, colors.zw),
+    ds('Redis', redisWslGet, colors.rw)
+  ]},
+  options: allOpts
+});
+
+// ── Tables (safe DOM construction) ──
+function buildTable(bodyId, zData, rData) {
+  var body = document.getElementById(bodyId);
+  var maxZ = Math.max.apply(null, zData);
+  for (var p = 0; p < pipes.length; p++) {
+    for (var c = 0; c < clients.length; c++) {
+      var i = p * 4 + c;
+      var z = zData[i], r = rData[i];
+      var ratio = (z / r).toFixed(1);
+
+      var tr = document.createElement('tr');
+
+      var td1 = document.createElement('td');
+      td1.textContent = 'pipe=' + pipes[p] + ' c=' + clients[c];
+      tr.appendChild(td1);
+
+      var td2 = document.createElement('td');
+      td2.textContent = fmt(z);
+      if (z === maxZ) td2.className = 'highlight';
+      tr.appendChild(td2);
+
+      var td3 = document.createElement('td');
+      td3.textContent = fmt(r);
+      tr.appendChild(td3);
+
+      var td4 = document.createElement('td');
+      td4.textContent = ratio + 'x';
+      tr.appendChild(td4);
+
+      body.appendChild(tr);
+    }
+  }
+}
+
+buildTable('setBody', zetdbWslSet, redisWslSet);
+buildTable('getBody', zetdbWslGet, redisWslGet);
+</script>
+
+</body>
+</html>

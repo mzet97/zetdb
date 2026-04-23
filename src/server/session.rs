@@ -7,8 +7,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::application::dispatcher::dispatch;
+use crate::observability::metrics;
 use crate::protocol::parser::{try_parse_frame, FrameResult, ParseError};
 use crate::protocol::response::{Response, ResponseError};
+use crate::storage::aof::AofWriter;
 use crate::storage::engine::KvEngine;
 
 const MAX_READ_BUF: usize = 1024 * 1024; // 1MB safety limit
@@ -19,6 +21,8 @@ pub async fn handle_session(
     peer: SocketAddr,
     engine: Arc<dyn KvEngine>,
     read_timeout: Duration,
+    aof: Option<Arc<AofWriter>>,
+    metrics_enabled: bool,
 ) {
     stream.set_nodelay(true).ok();
 
@@ -27,6 +31,9 @@ pub async fn handle_session(
     let mut read_buf = BytesMut::with_capacity(INITIAL_BUF);
     let mut write_buf = BytesMut::with_capacity(INITIAL_BUF);
 
+    if metrics_enabled {
+        metrics::metrics().connection_opened();
+    }
     log::info!("client connected: {peer}");
 
     loop {
@@ -55,8 +62,39 @@ pub async fn handle_session(
             match try_parse_frame(&read_buf) {
                 Ok(FrameResult::Complete { consumed, command }) => {
                     read_buf.advance(consumed);
-                    log::debug!("{peer}: {command:?}");
-                    dispatch(engine.as_ref(), command).write_to(&mut write_buf);
+
+                    // Capture AOF entry before dispatch consumes the command
+                    let aof_entry = if command.is_write() { command.to_aof_entry() } else { None };
+                    let cmd_type = if metrics_enabled { Some(command.command_type()) } else { None };
+                    let response = dispatch(engine.as_ref(), command);
+
+                    // Metrics — only when enabled
+                    if let Some(ct) = cmd_type {
+                        let m = metrics::metrics();
+                        m.record_command(ct);
+                        if matches!(ct, metrics::CommandType::Get) {
+                            if matches!(&response, Response::Value(Some(_))) {
+                                m.record_hit();
+                            } else if matches!(&response, Response::Value(None)) {
+                                m.record_miss();
+                            }
+                        }
+                        if matches!(&response, Response::Error(_)) {
+                            m.record_error();
+                        }
+                    }
+
+                    // AOF: log successful writes
+                    if let (Some(entry), Some(ref aof_writer), true) =
+                        (aof_entry, &aof, response.is_success())
+                    {
+                        if let Err(e) = aof_writer.append_raw(&entry) {
+                            log::warn!("{peer}: aof write failed: {e}");
+                        }
+                    }
+
+                    log::debug!("{peer}: dispatch done");
+                    response.write_to(&mut write_buf);
                 }
                 Ok(FrameResult::Skip { consumed }) => {
                     read_buf.advance(consumed);
@@ -86,6 +124,9 @@ pub async fn handle_session(
     }
 
     log::info!("client disconnected: {peer}");
+    if metrics_enabled {
+        metrics::metrics().connection_closed();
+    }
 }
 
 /// Skip buffer past the next newline for error recovery.
