@@ -116,10 +116,6 @@ cargo run --release --bin redis_compare -- --target zetdb --port 6379 --format t
 cargo run --release --bin redis_compare -- --target redis --port 6380 --format json
 ```
 
-## Desenvolvimento
-
-Este projeto segue **SDD (Specification-Driven Development)** — toda implementação é precedida por especificação, validação arquitetural e critérios de aceite claros.
-
 ## Licença
 
 Veja [LICENSE](LICENSE).
