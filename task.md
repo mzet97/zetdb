@@ -349,9 +349,23 @@ Criar linha de base de performance.
 
 ## 7. Épico F — Evolução planejada
 
-### [TODO] F1. Preparar parser para RESP
+### [DONE] F1. Preparar parser para RESP
 **Objetivo**
 Evoluir framing/parsing sem quebrar o núcleo.
+
+**Entregáveis**
+- `try_parse_frame()` com auto-detecção de protocolo (`*` = RESP, resto = inline)
+- `FrameResult` enum (Complete / Incomplete / Skip)
+- RESP parser: `*<count>\r\n$<len>\r\n<data>\r\n...`
+- Session loop refatorado para usar frame parser unificado
+- 25 testes novos (18 parser + 7 integração TCP RESP)
+- Inline existente sem nenhuma quebra
+
+**Critérios de aceite**
+- 83 testes passando
+- RESP clients (redis-cli compat) funcionam via TCP
+- Inline clients (nc) continuam funcionando
+- Pipeline RESP funcional
 
 ### [TODO] F2. Planejar persistência snapshot
 **Objetivo**

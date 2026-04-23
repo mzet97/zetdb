@@ -8,6 +8,16 @@ pub enum ParseError {
     SyntaxError(String),
 }
 
+#[derive(Debug)]
+pub enum FrameResult {
+    /// Complete command, advance buffer by `consumed` bytes
+    Complete { consumed: usize, command: Command },
+    /// Need more data from network
+    Incomplete,
+    /// Empty/whitespace line, advance buffer by `consumed` bytes
+    Skip { consumed: usize },
+}
+
 /// Zero-alloc byte scanner parser. Operates on raw bytes without creating
 /// Vec or calling to_uppercase. The only heap allocation is the key String
 /// required by the Command enum.
@@ -46,6 +56,23 @@ pub fn parse_bytes(input: &[u8]) -> Result<Command, ParseError> {
 /// Legacy str-based parser — delegates to parse_bytes.
 pub fn parse(input: &str) -> Result<Command, ParseError> {
     parse_bytes(input.as_bytes())
+}
+
+/// Try to parse one complete frame from the buffer.
+/// Auto-detects RESP (`*` prefix) vs inline protocol.
+/// Returns `Ok(FrameResult::Complete)` for a parsed command,
+/// `Ok(FrameResult::Skip)` for empty lines to skip,
+/// `Ok(FrameResult::Incomplete)` when more data is needed.
+pub fn try_parse_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
+    if buf.is_empty() {
+        return Ok(FrameResult::Incomplete);
+    }
+
+    if buf[0] == b'*' {
+        parse_resp_frame(buf)
+    } else {
+        parse_inline_frame(buf)
+    }
 }
 
 fn parse_get_bytes(rest: &[u8]) -> Result<Command, ParseError> {
@@ -130,6 +157,156 @@ fn parse_incr_bytes(rest: &[u8]) -> Result<Command, ParseError> {
     Ok(Command::Incr {
         key: bytes_to_string(key),
     })
+}
+
+// --- Frame parsers ---
+
+fn parse_inline_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
+    match memchr::memchr(b'\n', buf) {
+        None => Ok(FrameResult::Incomplete),
+        Some(pos) => match parse_bytes(&buf[..pos]) {
+            Ok(cmd) => Ok(FrameResult::Complete {
+                consumed: pos + 1,
+                command: cmd,
+            }),
+            Err(ParseError::EmptyCommand) => Ok(FrameResult::Skip { consumed: pos + 1 }),
+            Err(e) => Err(e),
+        },
+    }
+}
+
+fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
+    let mut pos = 0;
+
+    // Array header: *<count>\r\n
+    let (count, n) = match read_resp_line_int(buf, b'*')? {
+        Some(v) => v,
+        None => return Ok(FrameResult::Incomplete),
+    };
+    pos += n;
+
+    if count < 0 {
+        return Err(ParseError::SyntaxError("RESP: null array".into()));
+    }
+    let count = count as usize;
+    if count > 1024 {
+        return Err(ParseError::SyntaxError("RESP: array too large".into()));
+    }
+
+    let mut args: Vec<&[u8]> = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        // Bulk string header: $<len>\r\n
+        let (len, n) = match read_resp_line_int(&buf[pos..], b'$')? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+
+        if len < 0 {
+            // Null bulk string — treat as empty
+            args.push(&buf[..0]);
+        } else {
+            let len = len as usize;
+            if pos + len + 2 > buf.len() {
+                return Ok(FrameResult::Incomplete);
+            }
+            args.push(&buf[pos..pos + len]);
+            pos += len + 2; // data + \r\n
+        }
+    }
+
+    let cmd = resp_args_to_command(&args)?;
+    Ok(FrameResult::Complete { consumed: pos, command: cmd })
+}
+
+/// Parse a RESP integer line like `*3\r\n` or `$5\r\n`.
+/// Returns `(value, bytes_consumed)` or `None` if incomplete.
+fn read_resp_line_int(buf: &[u8], prefix: u8) -> Result<Option<(i64, usize)>, ParseError> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+    if buf[0] != prefix {
+        let ch = buf[0] as char;
+        let expected = prefix as char;
+        return Err(ParseError::SyntaxError(format!(
+            "RESP: expected '{expected}', got '{ch}'"
+        )));
+    }
+
+    match memchr::memchr(b'\n', buf) {
+        None => Ok(None),
+        Some(pos) => {
+            let num_end = if pos > 0 && buf[pos - 1] == b'\r' {
+                pos - 1
+            } else {
+                pos
+            };
+            let num_str = &buf[1..num_end];
+            let s = std::str::from_utf8(num_str)
+                .map_err(|_| ParseError::SyntaxError("RESP: invalid integer".into()))?;
+            let n: i64 = s
+                .parse()
+                .map_err(|_| ParseError::SyntaxError("RESP: expected integer".into()))?;
+            Ok(Some((n, pos + 1)))
+        }
+    }
+}
+
+fn resp_args_to_command(args: &[&[u8]]) -> Result<Command, ParseError> {
+    if args.is_empty() {
+        return Err(ParseError::EmptyCommand);
+    }
+
+    let verb = args[0];
+
+    if eq_ignore_ascii_case(verb, b"PING") {
+        return Ok(Command::Ping);
+    }
+    if eq_ignore_ascii_case(verb, b"GET") {
+        if args.len() != 2 {
+            return Err(ParseError::SyntaxError(
+                "GET requires exactly 1 argument: GET <key>".into(),
+            ));
+        }
+        return Ok(Command::Get {
+            key: bytes_to_string(args[1]),
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"SET") {
+        if args.len() < 3 {
+            return Err(ParseError::SyntaxError(
+                "SET requires at least 2 arguments: SET <key> <value>".into(),
+            ));
+        }
+        return Ok(Command::Set {
+            key: bytes_to_string(args[1]),
+            value: Bytes::copy_from_slice(args[2]),
+            ttl: None,
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"DEL") {
+        if args.len() != 2 {
+            return Err(ParseError::SyntaxError(
+                "DEL requires exactly 1 argument: DEL <key>".into(),
+            ));
+        }
+        return Ok(Command::Del {
+            key: bytes_to_string(args[1]),
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"INCR") {
+        if args.len() != 2 {
+            return Err(ParseError::SyntaxError(
+                "INCR requires exactly 1 argument: INCR <key>".into(),
+            ));
+        }
+        return Ok(Command::Incr {
+            key: bytes_to_string(args[1]),
+        });
+    }
+
+    Err(ParseError::UnknownCommand(bytes_to_string(verb)))
 }
 
 // --- Byte helpers ---
@@ -298,5 +475,198 @@ mod tests {
     #[test]
     fn parse_bytes_unknown() {
         assert!(matches!(parse_bytes(b"FOO"), Err(ParseError::UnknownCommand(_))));
+    }
+
+    // --- Frame parser tests ---
+
+    #[test]
+    fn frame_inline_ping() {
+        let input = b"PING\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                assert_eq!(consumed, 6);
+                assert!(matches!(command, Command::Ping));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_inline_incomplete() {
+        let input = b"PING";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Incomplete => {}
+            other => panic!("Expected Incomplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_inline_empty_line() {
+        let input = b"\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Skip { consumed } => assert_eq!(consumed, 2),
+            other => panic!("Expected Skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_inline_get() {
+        let input = b"GET mykey\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                assert_eq!(consumed, 11);
+                assert!(matches!(command, Command::Get { ref key } if key == "mykey"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_ping() {
+        let input = b"*1\r\n$4\r\nPING\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                assert_eq!(consumed, 14);
+                assert!(matches!(command, Command::Ping));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_get() {
+        let input = b"*2\r\n$3\r\nGET\r\n$5\r\nmykey\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                assert_eq!(consumed, 24);
+                assert!(matches!(command, Command::Get { ref key } if key == "mykey"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_set() {
+        let input = b"*3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$5\r\nhello\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Set { key, value, .. } => {
+                    assert_eq!(key, "mykey");
+                    assert_eq!(value, Bytes::from("hello"));
+                }
+                other => panic!("Expected Set, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_del() {
+        let input = b"*2\r\n$3\r\nDEL\r\n$5\r\nmykey\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::Del { ref key } if key == "mykey"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_incr() {
+        let input = b"*2\r\n$4\r\nINCR\r\n$3\r\ncnt\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::Incr { ref key } if key == "cnt"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_incomplete_header() {
+        let input = b"*2\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Incomplete => {}
+            other => panic!("Expected Incomplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_incomplete_bulk() {
+        let input = b"*2\r\n$3\r\nGET\r\n$5\r\nmyk";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Incomplete => {}
+            other => panic!("Expected Incomplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_empty_array() {
+        let input = b"*0\r\n";
+        assert!(matches!(try_parse_frame(input), Err(ParseError::EmptyCommand)));
+    }
+
+    #[test]
+    fn resp_null_array() {
+        let input = b"*-1\r\n";
+        assert!(matches!(try_parse_frame(input), Err(ParseError::SyntaxError(_))));
+    }
+
+    #[test]
+    fn resp_case_insensitive() {
+        let input = b"*2\r\n$3\r\nget\r\n$1\r\nx\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::Get { ref key } if key == "x"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_two_frames_in_buffer() {
+        let input = b"*1\r\n$4\r\nPING\r\n*2\r\n$3\r\nGET\r\n$1\r\nx\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                assert!(matches!(command, Command::Ping));
+                assert_eq!(consumed, 14);
+                // Second frame
+                match try_parse_frame(&input[consumed..]).unwrap() {
+                    FrameResult::Complete { command, .. } => {
+                        assert!(matches!(command, Command::Get { ref key } if key == "x"));
+                    }
+                    other => panic!("Expected Complete for second frame, got {other:?}"),
+                }
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_null_bulk_string_in_array() {
+        // SET with null value — becomes empty bytes
+        let input = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$-1\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Set { key, value, .. } => {
+                    assert_eq!(key, "k");
+                    assert_eq!(value, Bytes::from(""));
+                }
+                other => panic!("Expected Set, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_unknown_command() {
+        let input = b"*1\r\n$3\r\nFOO\r\n";
+        assert!(matches!(try_parse_frame(input), Err(ParseError::UnknownCommand(_))));
+    }
+
+    #[test]
+    fn resp_wrong_arg_count() {
+        let input = b"*1\r\n$3\r\nGET\r\n";
+        assert!(matches!(try_parse_frame(input), Err(ParseError::SyntaxError(_))));
     }
 }

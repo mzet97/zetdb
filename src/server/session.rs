@@ -2,12 +2,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::application::dispatcher::dispatch;
-use crate::protocol::parser::{parse_bytes, ParseError};
+use crate::protocol::parser::{try_parse_frame, FrameResult, ParseError};
 use crate::protocol::response::{Response, ResponseError};
 use crate::storage::engine::KvEngine;
 
@@ -50,38 +50,30 @@ pub async fn handle_session(
             break;
         }
 
-        // Pre-allocate write buffer: estimate ~32 bytes per response
-        let estimated_lines = count_newlines(&read_buf);
-        if estimated_lines > 0 {
-            write_buf.reserve(estimated_lines * 32);
-        }
-
-        // Process ALL complete lines in the buffer using memchr for fast scanning
-        while let Some(pos) = memchr::memchr(b'\n', &read_buf) {
-            let mut line = read_buf.split_to(pos + 1);
-            let line = trim_trailing(&mut line);
-
-            if line.is_empty() {
-                continue;
-            }
-
-            let response = match parse_bytes(line) {
-                Ok(cmd) => {
-                    log::debug!("{peer}: {cmd:?}");
-                    dispatch(engine.as_ref(), cmd)
+        // Process ALL complete frames in the buffer (inline or RESP)
+        loop {
+            match try_parse_frame(&read_buf) {
+                Ok(FrameResult::Complete { consumed, command }) => {
+                    read_buf.advance(consumed);
+                    log::debug!("{peer}: {command:?}");
+                    dispatch(engine.as_ref(), command).write_to(&mut write_buf);
                 }
-                Err(ParseError::EmptyCommand) => continue,
+                Ok(FrameResult::Skip { consumed }) => {
+                    read_buf.advance(consumed);
+                }
+                Ok(FrameResult::Incomplete) => break,
                 Err(ParseError::UnknownCommand(cmd)) => {
                     log::warn!("{peer}: unknown command '{cmd}'");
-                    Response::Error(ResponseError::UnknownCommand(cmd))
+                    skip_to_newline(&mut read_buf);
+                    Response::Error(ResponseError::UnknownCommand(cmd)).write_to(&mut write_buf);
                 }
                 Err(ParseError::SyntaxError(msg)) => {
                     log::warn!("{peer}: syntax error: {msg}");
-                    Response::Error(ResponseError::SyntaxError(msg))
+                    skip_to_newline(&mut read_buf);
+                    Response::Error(ResponseError::SyntaxError(msg)).write_to(&mut write_buf);
                 }
-            };
-
-            response.write_to(&mut write_buf);
+                Err(ParseError::EmptyCommand) => break,
+            }
         }
 
         // Flush all accumulated responses at once
@@ -96,19 +88,10 @@ pub async fn handle_session(
     log::info!("client disconnected: {peer}");
 }
 
-fn count_newlines(buf: &[u8]) -> usize {
-    bytecount(buf, b'\n')
-}
-
-fn bytecount(haystack: &[u8], needle: u8) -> usize {
-    // Fast count using memchr iterator
-    memchr::memchr_iter(needle, haystack).count()
-}
-
-fn trim_trailing(buf: &mut [u8]) -> &[u8] {
-    let mut end = buf.len();
-    while end > 0 && (buf[end - 1] == b'\n' || buf[end - 1] == b'\r' || buf[end - 1] == b' ') {
-        end -= 1;
+/// Skip buffer past the next newline for error recovery.
+fn skip_to_newline(buf: &mut BytesMut) {
+    match memchr::memchr(b'\n', buf) {
+        Some(pos) => buf.advance(pos + 1),
+        None => buf.clear(),
     }
-    &buf[..end]
 }

@@ -210,4 +210,169 @@ mod tests {
 
         server.abort();
     }
+
+    // --- RESP integration tests ---
+
+    /// Client that sends commands in RESP protocol format.
+    struct RespTestClient {
+        writer: tokio::io::WriteHalf<tokio::net::TcpStream>,
+        reader: BufReader<tokio::io::ReadHalf<tokio::net::TcpStream>>,
+    }
+
+    impl RespTestClient {
+        async fn connect(addr: &str) -> Self {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (reader, writer) = tokio::io::split(stream);
+            Self {
+                writer,
+                reader: BufReader::new(reader),
+            }
+        }
+
+        /// Send a RESP array command and return the response line.
+        async fn resp_command(&mut self, args: &[&[u8]]) -> String {
+            // Build RESP frame: *<count>\r\n$<len>\r\n<data>\r\n...
+            let mut frame = Vec::new();
+            frame.extend_from_slice(format!("*{}\r\n", args.len()).as_bytes());
+            for arg in args {
+                frame.extend_from_slice(format!("${}\r\n", arg.len()).as_bytes());
+                frame.extend_from_slice(arg);
+                frame.extend_from_slice(b"\r\n");
+            }
+
+            self.writer.write_all(&frame).await.unwrap();
+            self.writer.flush().await.unwrap();
+
+            let mut line = String::new();
+            self.reader.read_line(&mut line).await.unwrap();
+            line
+        }
+    }
+
+    #[tokio::test]
+    async fn resp_ping() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        let resp = client.resp_command(&[b"PING"]).await;
+        assert_eq!(resp, "+PONG\r\n");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resp_set_get_del() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        assert_eq!(
+            client.resp_command(&[b"SET", b"mykey", b"hello"]).await,
+            "+OK\r\n"
+        );
+        assert_eq!(
+            client.resp_command(&[b"GET", b"mykey"]).await,
+            "+hello\r\n"
+        );
+        assert_eq!(
+            client.resp_command(&[b"DEL", b"mykey"]).await,
+            ":1\r\n"
+        );
+        assert_eq!(
+            client.resp_command(&[b"GET", b"mykey"]).await,
+            "$-1\r\n"
+        );
+        assert_eq!(
+            client.resp_command(&[b"DEL", b"mykey"]).await,
+            ":0\r\n"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resp_incr() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        assert_eq!(client.resp_command(&[b"INCR", b"counter"]).await, ":1\r\n");
+        assert_eq!(client.resp_command(&[b"INCR", b"counter"]).await, ":2\r\n");
+        assert_eq!(client.resp_command(&[b"INCR", b"counter"]).await, ":3\r\n");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resp_case_insensitive() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        assert_eq!(client.resp_command(&[b"ping"]).await, "+PONG\r\n");
+        assert_eq!(
+            client.resp_command(&[b"set", b"k", b"v"]).await,
+            "+OK\r\n"
+        );
+        assert_eq!(client.resp_command(&[b"get", b"k"]).await, "+v\r\n");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resp_unknown_command() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        let resp = client.resp_command(&[b"FOOBAR"]).await;
+        assert!(resp.starts_with("-ERR unknown command"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resp_wrong_arg_count() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        let resp = client.resp_command(&[b"GET"]).await;
+        assert!(resp.starts_with("-ERR syntax"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resp_pipeline() {
+        let port = find_available_port();
+        let server = start_server(port).await;
+        let mut client = RespTestClient::connect(&format!("127.0.0.1:{port}")).await;
+
+        // Send multiple RESP commands in one write (pipeline)
+        let mut batch = Vec::new();
+        for i in 0..5 {
+            batch.extend_from_slice(format!("*3\r\n$3\r\nSET\r\n$2\r\nk{}\r\n$2\r\nv{}\r\n", i, i).as_bytes());
+        }
+        batch.extend_from_slice(b"*1\r\n$4\r\nPING\r\n");
+        client.writer.write_all(&batch).await.unwrap();
+        client.writer.flush().await.unwrap();
+
+        // Read 6 responses
+        for _ in 0..5 {
+            let mut line = String::new();
+            client.reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "+OK\r\n");
+        }
+        let mut line = String::new();
+        client.reader.read_line(&mut line).await.unwrap();
+        assert_eq!(line, "+PONG\r\n");
+
+        // Verify values
+        assert_eq!(client.resp_command(&[b"GET", b"k0"]).await, "+v0\r\n");
+        assert_eq!(client.resp_command(&[b"GET", b"k4"]).await, "+v4\r\n");
+
+        server.abort();
+    }
 }
