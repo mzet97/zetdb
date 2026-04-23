@@ -367,17 +367,51 @@ Evoluir framing/parsing sem quebrar o núcleo.
 - Inline clients (nc) continuam funcionando
 - Pipeline RESP funcional
 
-### [TODO] F2. Planejar persistência snapshot
+### [DONE] F2. Planejar persistência snapshot
 **Objetivo**
 Documentar desenho inicial de snapshot consistente.
 
-### [TODO] F3. Planejar append-only log
+**Entregáveis**
+- `docs/SNAPSHOT.md` com formato binário versionado (ZDB1)
+- Escrita atômica (temp file + rename)
+- TTL serializado como remaining duration
+- Background task periódica
+- Restore na inicialização
+- Plano de implementação em 5 sub-tarefas (F2.1-F2.5)
+
+**Critérios de aceite**
+- Design aderente à arquitetura (storage layer isolado)
+- Snapshots não bloqueiam operações normais
+- CRC32 para detectar corrupção
+- TTLs preservados corretamente
+
+### [DONE] F3. Planejar append-only log
 **Objetivo**
 Definir estratégia incremental de durabilidade futura.
 
-### [TODO] F4. Planejar observabilidade avançada
+**Entregáveis**
+- `docs/AOF.md` com design de append-only log
+- Formato de log entries, fsync policy, compaction
+- Integração com snapshot (RDB+AOF hybrid)
+
+**Critérios de aceite**
+- Design aderente à arquitetura
+- Compatível com snapshot existente
+- fsync configurável (every-write / every-second / never)
+
+### [DONE] F4. Planejar observabilidade avançada
 **Objetivo**
 Definir métricas e tracing de produção.
+
+**Entregáveis**
+- `docs/OBSERVABILITY.md` com design de métricas, tracing e health check
+- Contadores por comando, latência por operação, conexões ativas
+- Health check endpoint, structured logging
+
+**Critérios de aceite**
+- Design aderente à arquitetura
+- Overhead mínimo no hot path
+- Compatível com Prometheus (future export)
 
 ---
 
