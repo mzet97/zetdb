@@ -86,7 +86,7 @@ async fn mixed_workload(
                 }
 
                 count += 1;
-                if count.is_multiple_of(500) {
+                if count % 500 == 0 {
                     write_ops.fetch_add(500, Ordering::Relaxed);
                 }
             }
@@ -128,7 +128,7 @@ async fn mixed_workload(
                 }
 
                 count += 1;
-                if count.is_multiple_of(500) {
+                if count % 500 == 0 {
                     read_ops.fetch_add(500, Ordering::Relaxed);
                 }
             }

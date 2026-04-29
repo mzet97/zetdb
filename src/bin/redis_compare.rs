@@ -120,7 +120,7 @@ async fn resp_pipeline_bench(
                 }
 
                 local_count += pipeline_size as u64;
-                if local_count.is_multiple_of(10_000) {
+                if local_count % 10_000 == 0 {
                     total_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }

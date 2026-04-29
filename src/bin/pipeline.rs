@@ -80,7 +80,7 @@ async fn pipeline_bench(
                 }
 
                 local_count += pipeline_size as u64;
-                if local_count.is_multiple_of(10_000) {
+                if local_count % 10_000 == 0 {
                     total_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }
@@ -158,7 +158,7 @@ async fn pipeline_mixed(
                 }
 
                 count += pipeline_size as u64;
-                if count.is_multiple_of(10_000) {
+                if count % 10_000 == 0 {
                     write_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }
@@ -203,7 +203,7 @@ async fn pipeline_mixed(
                 }
 
                 count += pipeline_size as u64;
-                if count.is_multiple_of(10_000) {
+                if count % 10_000 == 0 {
                     read_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }

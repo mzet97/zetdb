@@ -73,7 +73,7 @@ async fn saturation_bench(
                 }
 
                 local_count += 1;
-                if local_count.is_multiple_of(1000) {
+                if local_count % 1000 == 0 {
                     total_ops.fetch_add(1000, Ordering::Relaxed);
                 }
             }

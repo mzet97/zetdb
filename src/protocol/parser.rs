@@ -656,7 +656,6 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
         });
     }
     if eq_ignore_ascii_case(verb, b"MSET") {
-        #[allow(clippy::manual_is_multiple_of)]
         if args_remaining < 2 || args_remaining % 2 != 0 {
             return Err(ParseError::SyntaxError(
                 "MSET requires matching key-value pairs: MSET <key> <value> [key value ...]".into(),
