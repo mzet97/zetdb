@@ -16,6 +16,7 @@ pub enum Response {
     Value(Option<Bytes>),
     Integer(i64),
     Error(ResponseError),
+    Array(Vec<Option<Bytes>>),
 }
 
 impl Response {
@@ -24,17 +25,35 @@ impl Response {
         !matches!(self, Response::Error(_))
     }
 
-    /// Writes serialized response directly into buffer — zero allocation for
-    /// Pong, Ok, Integer, and Value(None). The buffer must have sufficient
-    /// capacity or it will grow.
+    /// Writes serialized response in inline format (simple strings for values).
     pub fn write_to(&self, buf: &mut BytesMut) {
+        self.write_to_impl(buf, false);
+    }
+
+    /// Writes serialized response in RESP format (bulk strings for values).
+    pub fn write_to_resp(&self, buf: &mut BytesMut) {
+        self.write_to_impl(buf, true);
+    }
+
+    fn write_to_impl(&self, buf: &mut BytesMut, resp_mode: bool) {
         match self {
             Self::Pong => buf.extend_from_slice(b"+PONG\r\n"),
             Self::Ok => buf.extend_from_slice(b"+OK\r\n"),
             Self::Value(Some(data)) => {
-                buf.extend_from_slice(b"+");
-                buf.extend_from_slice(data);
-                buf.extend_from_slice(b"\r\n");
+                if resp_mode {
+                    // RESP bulk string: $<len>\r\n<data>\r\n
+                    buf.extend_from_slice(b"$");
+                    let mut itoa_buf = itoa::Buffer::new();
+                    buf.extend_from_slice(itoa_buf.format(data.len()).as_bytes());
+                    buf.extend_from_slice(b"\r\n");
+                    buf.extend_from_slice(data);
+                    buf.extend_from_slice(b"\r\n");
+                } else {
+                    // Inline simple string: +<data>\r\n
+                    buf.extend_from_slice(b"+");
+                    buf.extend_from_slice(data);
+                    buf.extend_from_slice(b"\r\n");
+                }
             }
             Self::Value(None) => buf.extend_from_slice(b"$-1\r\n"),
             Self::Integer(n) => {
@@ -68,6 +87,26 @@ impl Response {
                 buf.extend_from_slice(msg.as_bytes());
                 buf.extend_from_slice(b"\r\n");
             }
+            Self::Array(items) => {
+                let mut itoa_buf = itoa::Buffer::new();
+                buf.extend_from_slice(b"*");
+                buf.extend_from_slice(itoa_buf.format(items.len()).as_bytes());
+                buf.extend_from_slice(b"\r\n");
+                for item in items {
+                    match item {
+                        Some(data) => {
+                            buf.extend_from_slice(b"$");
+                            buf.extend_from_slice(itoa_buf.format(data.len()).as_bytes());
+                            buf.extend_from_slice(b"\r\n");
+                            buf.extend_from_slice(data);
+                            buf.extend_from_slice(b"\r\n");
+                        }
+                        None => {
+                            buf.extend_from_slice(b"$-1\r\n");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -95,6 +134,19 @@ impl Response {
             }
             Self::Error(ResponseError::InternalError(msg)) => {
                 format!("-ERR internal: {msg}\r\n")
+            }
+            Self::Array(items) => {
+                let mut s = format!("*{}\r\n", items.len());
+                for item in items {
+                    match item {
+                        Some(data) => {
+                            let val = String::from_utf8_lossy(data);
+                            s.push_str(&format!("${}\r\n{val}\r\n", data.len()));
+                        }
+                        None => s.push_str("$-1\r\n"),
+                    }
+                }
+                s
             }
         }
     }

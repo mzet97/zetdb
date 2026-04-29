@@ -1,8 +1,8 @@
 use serde::Serialize;
+use std::env;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::env;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -120,7 +120,7 @@ async fn resp_pipeline_bench(
                 }
 
                 local_count += pipeline_size as u64;
-                if local_count % 10_000 == 0 {
+                if local_count.is_multiple_of(10_000) {
                     total_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }
@@ -211,13 +211,35 @@ async fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--target" => { target = args[i + 1].clone(); i += 2; }
-            "--host" => { host = args[i + 1].clone(); i += 2; }
-            "--port" => { port = args[i + 1].parse().unwrap(); i += 2; }
-            "--format" => { format = args[i + 1].clone(); i += 2; }
-            "--duration" => { bench_duration = args[i + 1].parse().unwrap(); i += 2; }
-            "--help" | "-h" => { print_usage(); return; }
-            _ => { eprintln!("Unknown arg: {}", args[i]); print_usage(); return; }
+            "--target" => {
+                target = args[i + 1].clone();
+                i += 2;
+            }
+            "--host" => {
+                host = args[i + 1].clone();
+                i += 2;
+            }
+            "--port" => {
+                port = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--format" => {
+                format = args[i + 1].clone();
+                i += 2;
+            }
+            "--duration" => {
+                bench_duration = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--help" | "-h" => {
+                print_usage();
+                return;
+            }
+            _ => {
+                eprintln!("Unknown arg: {}", args[i]);
+                print_usage();
+                return;
+            }
         }
     }
 
@@ -232,7 +254,10 @@ async fn main() {
 
     // --- SET ---
     if format == "text" {
-        println!("--- SET (WRITE) --- target={} platform={} ---", target, platform);
+        println!(
+            "--- SET (WRITE) --- target={} platform={} ---",
+            target, platform
+        );
         println!("{:<50} | {:>12} | {:>12}", "test", "total", "ops/s");
         println!("{}", "-".repeat(82));
     }
@@ -271,7 +296,10 @@ async fn main() {
     prepopulate(&addr, 5000).await;
 
     if format == "text" {
-        println!("--- GET (READ) --- target={} platform={} ---", target, platform);
+        println!(
+            "--- GET (READ) --- target={} platform={} ---",
+            target, platform
+        );
         println!("{:<50} | {:>12} | {:>12}", "test", "total", "ops/s");
         println!("{}", "-".repeat(82));
     }

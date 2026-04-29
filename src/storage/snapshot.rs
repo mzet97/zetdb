@@ -69,12 +69,18 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
     };
 
     if data.len() < HEADER_SIZE + CRC_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "snapshot too short",
+        ));
     }
 
     // Verify magic
     if &data[0..4] != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid snapshot magic"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid snapshot magic",
+        ));
     }
 
     // Verify version
@@ -90,7 +96,10 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
     let stored_crc = u32::from_le_bytes(data[payload_end..].try_into().unwrap());
     let computed_crc = crc32fast::hash(&data[..payload_end]);
     if stored_crc != computed_crc {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot CRC mismatch"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "snapshot CRC mismatch",
+        ));
     }
 
     // Parse header
@@ -141,7 +150,13 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
         };
 
         engine
-            .set(key, ValueEntry { data: value, expires_at })
+            .set(
+                key,
+                ValueEntry {
+                    data: value,
+                    expires_at,
+                },
+            )
             .ok();
         loaded += 1;
     }
@@ -188,9 +203,15 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let engine = DashMapEngine::new();
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
-        engine.set("k3".into(), ValueEntry::new(Bytes::from("hello world"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
+        engine
+            .set("k3".into(), ValueEntry::new(Bytes::from("hello world")))
+            .unwrap();
 
         let count = dump_snapshot(&engine, &path).unwrap();
         assert_eq!(count, 3);
@@ -201,7 +222,10 @@ mod tests {
 
         assert_eq!(engine2.get("k1").unwrap().unwrap().data, Bytes::from("v1"));
         assert_eq!(engine2.get("k2").unwrap().unwrap().data, Bytes::from("v2"));
-        assert_eq!(engine2.get("k3").unwrap().unwrap().data, Bytes::from("hello world"));
+        assert_eq!(
+            engine2.get("k3").unwrap().unwrap().data,
+            Bytes::from("hello world")
+        );
     }
 
     #[test]
@@ -212,7 +236,10 @@ mod tests {
 
         let engine = DashMapEngine::new();
         engine
-            .set("ttl_key".into(), ValueEntry::with_ttl(Bytes::from("val"), Duration::from_secs(300)))
+            .set(
+                "ttl_key".into(),
+                ValueEntry::with_ttl(Bytes::from("val"), Duration::from_secs(300)),
+            )
             .unwrap();
 
         dump_snapshot(&engine, &path).unwrap();
@@ -232,9 +259,14 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let engine = DashMapEngine::new();
-        engine.set("live".into(), ValueEntry::new(Bytes::from("yes"))).unwrap();
         engine
-            .set("dead".into(), ValueEntry::with_ttl(Bytes::from("no"), Duration::from_millis(1)))
+            .set("live".into(), ValueEntry::new(Bytes::from("yes")))
+            .unwrap();
+        engine
+            .set(
+                "dead".into(),
+                ValueEntry::with_ttl(Bytes::from("no"), Duration::from_millis(1)),
+            )
             .unwrap();
 
         std::thread::sleep(Duration::from_millis(5));
@@ -245,7 +277,10 @@ mod tests {
         let engine2 = DashMapEngine::new();
         load_snapshot(&engine2, &path).unwrap();
 
-        assert_eq!(engine2.get("live").unwrap().unwrap().data, Bytes::from("yes"));
+        assert_eq!(
+            engine2.get("live").unwrap().unwrap().data,
+            Bytes::from("yes")
+        );
         assert!(engine2.get("dead").unwrap().is_none());
     }
 
@@ -256,7 +291,9 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let engine = DashMapEngine::new();
-        engine.set("k".into(), ValueEntry::new(Bytes::from("v"))).unwrap();
+        engine
+            .set("k".into(), ValueEntry::new(Bytes::from("v")))
+            .unwrap();
         dump_snapshot(&engine, &path).unwrap();
 
         // Corrupt a byte in the middle
@@ -311,6 +348,9 @@ mod tests {
         let engine2 = DashMapEngine::new();
         load_snapshot(&engine2, &path).unwrap();
 
-        assert_eq!(engine2.get("bin").unwrap().unwrap().data.as_ref(), binary.as_slice());
+        assert_eq!(
+            engine2.get("bin").unwrap().unwrap().data.as_ref(),
+            binary.as_slice()
+        );
     }
 }

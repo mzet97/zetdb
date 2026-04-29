@@ -14,7 +14,7 @@ use crate::storage::aof::AofWriter;
 use crate::storage::engine::KvEngine;
 
 const MAX_READ_BUF: usize = 1024 * 1024; // 1MB safety limit
-const INITIAL_BUF: usize = 16384;         // 16KB initial buffer
+const INITIAL_BUF: usize = 16384; // 16KB initial buffer
 
 pub async fn handle_session(
     stream: TcpStream,
@@ -59,13 +59,24 @@ pub async fn handle_session(
 
         // Process ALL complete frames in the buffer (inline or RESP)
         loop {
+            // Detect protocol: RESP starts with '*', inline doesn't
+            let is_resp = read_buf.first() == Some(&b'*');
+
             match try_parse_frame(&read_buf) {
                 Ok(FrameResult::Complete { consumed, command }) => {
                     read_buf.advance(consumed);
 
                     // Capture AOF entry before dispatch consumes the command
-                    let aof_entry = if command.is_write() { command.to_aof_entry() } else { None };
-                    let cmd_type = if metrics_enabled { Some(command.command_type()) } else { None };
+                    let aof_entry = if command.is_write() {
+                        command.to_aof_entry()
+                    } else {
+                        None
+                    };
+                    let cmd_type = if metrics_enabled {
+                        Some(command.command_type())
+                    } else {
+                        None
+                    };
                     let response = dispatch(engine.as_ref(), command);
 
                     // Metrics — only when enabled
@@ -94,7 +105,11 @@ pub async fn handle_session(
                     }
 
                     log::debug!("{peer}: dispatch done");
-                    response.write_to(&mut write_buf);
+                    if is_resp {
+                        response.write_to_resp(&mut write_buf);
+                    } else {
+                        response.write_to(&mut write_buf);
+                    }
                 }
                 Ok(FrameResult::Skip { consumed }) => {
                     read_buf.advance(consumed);

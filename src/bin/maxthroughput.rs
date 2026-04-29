@@ -86,7 +86,7 @@ async fn mixed_workload(
                 }
 
                 count += 1;
-                if count % 500 == 0 {
+                if count.is_multiple_of(500) {
                     write_ops.fetch_add(500, Ordering::Relaxed);
                 }
             }
@@ -128,7 +128,7 @@ async fn mixed_workload(
                 }
 
                 count += 1;
-                if count % 500 == 0 {
+                if count.is_multiple_of(500) {
                     read_ops.fetch_add(500, Ordering::Relaxed);
                 }
             }
@@ -144,7 +144,11 @@ async fn mixed_workload(
     }
 
     let elapsed = start.elapsed();
-    (write_ops.load(Ordering::Relaxed), read_ops.load(Ordering::Relaxed), elapsed)
+    (
+        write_ops.load(Ordering::Relaxed),
+        read_ops.load(Ordering::Relaxed),
+        elapsed,
+    )
 }
 
 #[tokio::main]
@@ -157,7 +161,7 @@ async fn main() {
     let config = Config {
         bind_addr: "127.0.0.1".into(),
         port,
-        read_timeout: Duration::from_secs(300),
+        read_timeout_secs: 300,
         ..Default::default()
     };
     let engine = Arc::new(DashMapEngine::new());
@@ -169,7 +173,11 @@ async fn main() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     println!("ZetDB Max Throughput Benchmark (mixed workload)");
-    println!("Duration: {}s per test | Pre-populated keys: {}", test_duration.as_secs(), n_keys);
+    println!(
+        "Duration: {}s per test | Pre-populated keys: {}",
+        test_duration.as_secs(),
+        n_keys
+    );
     println!("{}", "=".repeat(100));
     println!();
 
@@ -191,15 +199,15 @@ async fn main() {
 
     // Test different write/read client ratios
     let configs: &[(usize, usize)] = &[
-        (128, 0),    // write-only
-        (0, 128),    // read-only
-        (64, 64),    // 50/50
-        (96, 32),    // 75/25
-        (32, 96),    // 25/75
-        (80, 80),    // 160 total
-        (100, 100),  // 200 total
-        (64, 128),   // 192 total, read-heavy
-        (128, 64),   // 192 total, write-heavy
+        (128, 0),   // write-only
+        (0, 128),   // read-only
+        (64, 64),   // 50/50
+        (96, 32),   // 75/25
+        (32, 96),   // 25/75
+        (80, 80),   // 160 total
+        (100, 100), // 200 total
+        (64, 128),  // 192 total, read-heavy
+        (128, 64),  // 192 total, write-heavy
     ];
 
     for &(w, r) in configs {

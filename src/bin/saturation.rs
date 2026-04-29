@@ -14,7 +14,13 @@ fn find_available_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
-async fn saturation_bench(label: &str, addr: &str, clients: usize, duration: Duration, operation: &str) {
+async fn saturation_bench(
+    label: &str,
+    addr: &str,
+    clients: usize,
+    duration: Duration,
+    operation: &str,
+) {
     let total_ops = Arc::new(AtomicU64::new(0));
     let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let start = Instant::now();
@@ -67,7 +73,7 @@ async fn saturation_bench(label: &str, addr: &str, clients: usize, duration: Dur
                 }
 
                 local_count += 1;
-                if local_count % 1000 == 0 {
+                if local_count.is_multiple_of(1000) {
                     total_ops.fetch_add(1000, Ordering::Relaxed);
                 }
             }
@@ -121,7 +127,7 @@ async fn main() {
     let config = Config {
         bind_addr: "127.0.0.1".into(),
         port,
-        read_timeout: Duration::from_secs(300),
+        read_timeout_secs: 300,
         ..Default::default()
     };
     let engine = Arc::new(DashMapEngine::new());
@@ -138,7 +144,10 @@ async fn main() {
 
     // --- WRITE SATURATION ---
     println!("--- WRITE (SET) SATURATION ---");
-    println!("{:35} | {:>3} {:>8} | {:>8}     | {:>10}", "test", "c", "dur", "total", "ops/s");
+    println!(
+        "{:35} | {:>3} {:>8} | {:>8}     | {:>10}",
+        "test", "c", "dur", "total", "ops/s"
+    );
     println!("{}", "-".repeat(85));
 
     for &clients in &[1, 2, 4, 8, 16, 32, 64] {
@@ -160,7 +169,10 @@ async fn main() {
     presaturate(&addr, 1000).await;
     println!();
 
-    println!("{:35} | {:>3} {:>8} | {:>8}     | {:>10}", "test", "c", "dur", "total", "ops/s");
+    println!(
+        "{:35} | {:>3} {:>8} | {:>8}     | {:>10}",
+        "test", "c", "dur", "total", "ops/s"
+    );
     println!("{}", "-".repeat(85));
 
     for &clients in &[1, 2, 4, 8, 16, 32, 64] {

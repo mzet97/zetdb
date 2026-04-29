@@ -53,6 +53,35 @@ pub fn parse_bytes(input: &[u8]) -> Result<Command, ParseError> {
     if eq_ignore_ascii_case(verb, b"DBSIZE") {
         return Ok(Command::DbSize);
     }
+    if eq_ignore_ascii_case(verb, b"EXISTS") {
+        return parse_single_key_bytes(rest, "EXISTS", |key| Command::Exists { key });
+    }
+    if eq_ignore_ascii_case(verb, b"TTL") {
+        return parse_single_key_bytes(rest, "TTL", |key| Command::Ttl { key });
+    }
+    if eq_ignore_ascii_case(verb, b"EXPIRE") {
+        return parse_expire_bytes(rest);
+    }
+    if eq_ignore_ascii_case(verb, b"FLUSHDB") {
+        let rest = trim(rest);
+        if !rest.is_empty() {
+            return Err(ParseError::SyntaxError("FLUSHDB takes no arguments".into()));
+        }
+        return Ok(Command::FlushDb);
+    }
+    if eq_ignore_ascii_case(verb, b"KEYS") {
+        let rest = trim(rest);
+        if !rest.is_empty() {
+            return Err(ParseError::SyntaxError("KEYS takes no arguments".into()));
+        }
+        return Ok(Command::Keys);
+    }
+    if eq_ignore_ascii_case(verb, b"MGET") {
+        return parse_mget_bytes(rest);
+    }
+    if eq_ignore_ascii_case(verb, b"MSET") {
+        return parse_mset_bytes(rest);
+    }
 
     Err(ParseError::UnknownCommand(
         String::from_utf8_lossy(verb).into_owned(),
@@ -105,26 +134,73 @@ fn parse_set_bytes(rest: &[u8]) -> Result<Command, ParseError> {
     let rest = trim(rest);
     if rest.is_empty() {
         return Err(ParseError::SyntaxError(
-            "SET requires at least 2 arguments: SET <key> <value>".into(),
+            "SET requires at least 2 arguments: SET <key> <value> [EX seconds | PX millis]".into(),
         ));
     }
-    let (key, value_part) = split_first_word(rest);
+    let (key, rest) = split_first_word(rest);
     if key.is_empty() {
         return Err(ParseError::SyntaxError(
-            "SET requires at least 2 arguments: SET <key> <value>".into(),
+            "SET requires at least 2 arguments: SET <key> <value> [EX seconds | PX millis]".into(),
         ));
     }
-    let value_part = trim(value_part);
-    if value_part.is_empty() {
+    let rest = trim(rest);
+    if rest.is_empty() {
         return Err(ParseError::SyntaxError(
-            "SET requires at least 2 arguments: SET <key> <value>".into(),
+            "SET requires at least 2 arguments: SET <key> <value> [EX seconds | PX millis]".into(),
         ));
     }
+    // Value is the next token only; remaining tokens are options (EX/PX)
+    let (value, rest) = split_first_word(rest);
+    let trailing = trim(rest);
+
+    let ttl = if !trailing.is_empty() {
+        parse_ttl_option(trailing)?
+    } else {
+        None
+    };
+
     Ok(Command::Set {
         key: bytes_to_string(key),
-        value: Bytes::copy_from_slice(value_part),
-        ttl: None,
+        value: Bytes::copy_from_slice(value),
+        ttl,
     })
+}
+
+/// Parse optional TTL suffix: EX <seconds> | PX <millis>
+fn parse_ttl_option(input: &[u8]) -> Result<Option<std::time::Duration>, ParseError> {
+    let (opt, rest) = split_first_word(input);
+    let rest = trim(rest);
+
+    if eq_ignore_ascii_case(opt, b"EX") {
+        let (val, trailing) = split_first_word(rest);
+        let trailing = trim(trailing);
+        if !trailing.is_empty() {
+            return Err(ParseError::SyntaxError(
+                "SET EX: unexpected extra arguments".into(),
+            ));
+        }
+        let secs: u64 = bytes_to_string(val)
+            .parse()
+            .map_err(|_| ParseError::SyntaxError("SET EX: expected integer seconds".into()))?;
+        Ok(Some(std::time::Duration::from_secs(secs)))
+    } else if eq_ignore_ascii_case(opt, b"PX") {
+        let (val, trailing) = split_first_word(rest);
+        let trailing = trim(trailing);
+        if !trailing.is_empty() {
+            return Err(ParseError::SyntaxError(
+                "SET PX: unexpected extra arguments".into(),
+            ));
+        }
+        let millis: u64 = bytes_to_string(val)
+            .parse()
+            .map_err(|_| ParseError::SyntaxError("SET PX: expected integer milliseconds".into()))?;
+        Ok(Some(std::time::Duration::from_millis(millis)))
+    } else {
+        Err(ParseError::SyntaxError(format!(
+            "SET: unknown option '{}'",
+            String::from_utf8_lossy(opt)
+        )))
+    }
 }
 
 fn parse_del_bytes(rest: &[u8]) -> Result<Command, ParseError> {
@@ -165,7 +241,130 @@ fn parse_incr_bytes(rest: &[u8]) -> Result<Command, ParseError> {
     })
 }
 
+// --- Helper for single-key commands (EXISTS, TTL) ---
+
+fn parse_single_key_bytes<F>(
+    rest: &[u8],
+    cmd_name: &str,
+    constructor: F,
+) -> Result<Command, ParseError>
+where
+    F: FnOnce(String) -> Command,
+{
+    let rest = trim(rest);
+    if rest.is_empty() {
+        return Err(ParseError::SyntaxError(format!(
+            "{cmd_name} requires exactly 1 argument: {cmd_name} <key>"
+        )));
+    }
+    let (key, trailing) = split_first_word(rest);
+    let trailing = trim(trailing);
+    if !trailing.is_empty() {
+        return Err(ParseError::SyntaxError(format!(
+            "{cmd_name} requires exactly 1 argument: {cmd_name} <key>"
+        )));
+    }
+    Ok(constructor(bytes_to_string(key)))
+}
+
+fn parse_expire_bytes(rest: &[u8]) -> Result<Command, ParseError> {
+    let rest = trim(rest);
+    if rest.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "EXPIRE requires 2 arguments: EXPIRE <key> <seconds>".into(),
+        ));
+    }
+    let (key, rest) = split_first_word(rest);
+    if key.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "EXPIRE requires 2 arguments: EXPIRE <key> <seconds>".into(),
+        ));
+    }
+    let rest = trim(rest);
+    if rest.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "EXPIRE requires 2 arguments: EXPIRE <key> <seconds>".into(),
+        ));
+    }
+    let (secs, trailing) = split_first_word(rest);
+    let trailing = trim(trailing);
+    if !trailing.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "EXPIRE requires exactly 2 arguments: EXPIRE <key> <seconds>".into(),
+        ));
+    }
+    let seconds: u64 = bytes_to_string(secs).parse().map_err(|_| {
+        ParseError::SyntaxError("EXPIRE: seconds must be a positive integer".into())
+    })?;
+    Ok(Command::Expire {
+        key: bytes_to_string(key),
+        seconds,
+    })
+}
+
 // --- Frame parsers ---
+
+fn parse_mget_bytes(rest: &[u8]) -> Result<Command, ParseError> {
+    let rest = trim(rest);
+    if rest.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "MGET requires at least 1 argument: MGET <key> [key ...]".into(),
+        ));
+    }
+    let mut keys = Vec::new();
+    let mut remaining = rest;
+    while !remaining.is_empty() {
+        remaining = trim(remaining);
+        if remaining.is_empty() {
+            break;
+        }
+        let (key, rest) = split_first_word(remaining);
+        keys.push(bytes_to_string(key));
+        remaining = rest;
+    }
+    if keys.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "MGET requires at least 1 argument: MGET <key> [key ...]".into(),
+        ));
+    }
+    Ok(Command::Mget { keys })
+}
+
+fn parse_mset_bytes(rest: &[u8]) -> Result<Command, ParseError> {
+    let rest = trim(rest);
+    if rest.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "MSET requires at least 2 arguments: MSET <key> <value> [key value ...]".into(),
+        ));
+    }
+    let mut pairs = Vec::new();
+    let mut remaining = rest;
+    loop {
+        remaining = trim(remaining);
+        if remaining.is_empty() {
+            break;
+        }
+        let (key, rest) = split_first_word(remaining);
+        if key.is_empty() {
+            break;
+        }
+        remaining = trim(rest);
+        if remaining.is_empty() {
+            return Err(ParseError::SyntaxError(
+                "MSET requires matching key-value pairs".into(),
+            ));
+        }
+        let (value, rest) = split_first_word(remaining);
+        pairs.push((bytes_to_string(key), Bytes::copy_from_slice(value)));
+        remaining = rest;
+    }
+    if pairs.is_empty() {
+        return Err(ParseError::SyntaxError(
+            "MSET requires at least 2 arguments: MSET <key> <value> [key value ...]".into(),
+        ));
+    }
+    Ok(Command::Mset { pairs })
+}
 
 fn parse_inline_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
     match memchr::memchr(b'\n', buf) {
@@ -212,13 +411,22 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
 
     // Switch on verb and parse args inline — no Vec allocation
     if eq_ignore_ascii_case(verb, b"PING") {
-        return Ok(FrameResult::Complete { consumed: pos, command: Command::Ping });
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Ping,
+        });
     }
     if eq_ignore_ascii_case(verb, b"INFO") {
-        return Ok(FrameResult::Complete { consumed: pos, command: Command::Info });
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Info,
+        });
     }
     if eq_ignore_ascii_case(verb, b"DBSIZE") {
-        return Ok(FrameResult::Complete { consumed: pos, command: Command::DbSize });
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::DbSize,
+        });
     }
     if eq_ignore_ascii_case(verb, b"GET") {
         if args_remaining != 1 {
@@ -241,7 +449,7 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
     if eq_ignore_ascii_case(verb, b"SET") {
         if args_remaining < 2 {
             return Err(ParseError::SyntaxError(
-                "SET requires at least 2 arguments: SET <key> <value>".into(),
+                "SET requires at least 2 arguments: SET <key> <value> [EX sec | PX ms]".into(),
             ));
         }
         let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
@@ -254,20 +462,65 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
             None => return Ok(FrameResult::Incomplete),
         };
         pos += n;
-        // Skip any extra args (future: PX support)
-        for _ in 2..args_remaining {
-            let (_, n) = match read_resp_bulk(&buf[pos..])? {
+
+        // Parse optional EX/PX from remaining args
+        let extra_args = args_remaining - 2;
+        let mut ttl: Option<std::time::Duration> = None;
+
+        if extra_args >= 2 {
+            let (opt_data, n) = match read_resp_bulk(&buf[pos..])? {
                 Some(v) => v,
                 None => return Ok(FrameResult::Incomplete),
             };
             pos += n;
+            let (int_data, n) = match read_resp_bulk(&buf[pos..])? {
+                Some(v) => v,
+                None => return Ok(FrameResult::Incomplete),
+            };
+            pos += n;
+
+            if eq_ignore_ascii_case(opt_data, b"EX") {
+                let secs: u64 = bytes_to_string(int_data)
+                    .parse()
+                    .map_err(|_| ParseError::SyntaxError("SET EX: expected integer".into()))?;
+                ttl = Some(std::time::Duration::from_secs(secs));
+            } else if eq_ignore_ascii_case(opt_data, b"PX") {
+                let ms: u64 = bytes_to_string(int_data)
+                    .parse()
+                    .map_err(|_| ParseError::SyntaxError("SET PX: expected integer".into()))?;
+                ttl = Some(std::time::Duration::from_millis(ms));
+            } else {
+                return Err(ParseError::SyntaxError(format!(
+                    "SET: unknown option '{}'",
+                    String::from_utf8_lossy(opt_data)
+                )));
+            }
+
+            // Skip any remaining args
+            for _ in 4..args_remaining {
+                let (_, n) = match read_resp_bulk(&buf[pos..])? {
+                    Some(v) => v,
+                    None => return Ok(FrameResult::Incomplete),
+                };
+                pos += n;
+            }
+        } else {
+            // Skip any remaining args beyond key+value
+            for _ in 2..args_remaining {
+                let (_, n) = match read_resp_bulk(&buf[pos..])? {
+                    Some(v) => v,
+                    None => return Ok(FrameResult::Incomplete),
+                };
+                pos += n;
+            }
         }
+
         return Ok(FrameResult::Complete {
             consumed: pos,
             command: Command::Set {
                 key: bytes_to_string(key_data),
                 value: Bytes::copy_from_slice(val_data),
-                ttl: None,
+                ttl,
             },
         });
     }
@@ -305,6 +558,127 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
             command: Command::Incr {
                 key: bytes_to_string(key_data),
             },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"EXISTS") {
+        if args_remaining != 1 {
+            return Err(ParseError::SyntaxError(
+                "EXISTS requires exactly 1 argument: EXISTS <key>".into(),
+            ));
+        }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Exists {
+                key: bytes_to_string(key_data),
+            },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"TTL") {
+        if args_remaining != 1 {
+            return Err(ParseError::SyntaxError(
+                "TTL requires exactly 1 argument: TTL <key>".into(),
+            ));
+        }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Ttl {
+                key: bytes_to_string(key_data),
+            },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"EXPIRE") {
+        if args_remaining != 2 {
+            return Err(ParseError::SyntaxError(
+                "EXPIRE requires 2 arguments: EXPIRE <key> <seconds>".into(),
+            ));
+        }
+        let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        let (secs_data, n) = match read_resp_bulk(&buf[pos..])? {
+            Some(v) => v,
+            None => return Ok(FrameResult::Incomplete),
+        };
+        pos += n;
+        let seconds: u64 = bytes_to_string(secs_data).parse().map_err(|_| {
+            ParseError::SyntaxError("EXPIRE: seconds must be a positive integer".into())
+        })?;
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Expire {
+                key: bytes_to_string(key_data),
+                seconds,
+            },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"FLUSHDB") {
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::FlushDb,
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"KEYS") {
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Keys,
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"MGET") {
+        if args_remaining < 1 {
+            return Err(ParseError::SyntaxError(
+                "MGET requires at least 1 argument: MGET <key> [key ...]".into(),
+            ));
+        }
+        let mut keys = Vec::with_capacity(args_remaining);
+        for _ in 0..args_remaining {
+            let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+                Some(v) => v,
+                None => return Ok(FrameResult::Incomplete),
+            };
+            pos += n;
+            keys.push(bytes_to_string(key_data));
+        }
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Mget { keys },
+        });
+    }
+    if eq_ignore_ascii_case(verb, b"MSET") {
+        if args_remaining < 2 || !args_remaining.is_multiple_of(2) {
+            return Err(ParseError::SyntaxError(
+                "MSET requires matching key-value pairs: MSET <key> <value> [key value ...]".into(),
+            ));
+        }
+        let pair_count = args_remaining / 2;
+        let mut pairs = Vec::with_capacity(pair_count);
+        for _ in 0..pair_count {
+            let (key_data, n) = match read_resp_bulk(&buf[pos..])? {
+                Some(v) => v,
+                None => return Ok(FrameResult::Incomplete),
+            };
+            pos += n;
+            let (val_data, n) = match read_resp_bulk(&buf[pos..])? {
+                Some(v) => v,
+                None => return Ok(FrameResult::Incomplete),
+            };
+            pos += n;
+            pairs.push((bytes_to_string(key_data), Bytes::copy_from_slice(val_data)));
+        }
+        return Ok(FrameResult::Complete {
+            consumed: pos,
+            command: Command::Mset { pairs },
         });
     }
 
@@ -431,14 +805,62 @@ mod tests {
     }
 
     #[test]
-    fn set_multi_word_value() {
-        match parse("SET msg hello world foo").unwrap() {
+    fn set_value_is_single_token() {
+        match parse("SET msg hello").unwrap() {
             Command::Set { key, value, .. } => {
                 assert_eq!(key, "msg");
-                assert_eq!(value, Bytes::from("hello world foo"));
+                assert_eq!(value, Bytes::from("hello"));
             }
             other => panic!("Expected Set, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn set_with_ex_seconds() {
+        match parse("SET mykey hello EX 60").unwrap() {
+            Command::Set { key, value, ttl } => {
+                assert_eq!(key, "mykey");
+                assert_eq!(value, Bytes::from("hello"));
+                assert_eq!(ttl, Some(std::time::Duration::from_secs(60)));
+            }
+            other => panic!("Expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_with_px_millis() {
+        match parse("SET mykey hello PX 3000").unwrap() {
+            Command::Set { key, value, ttl } => {
+                assert_eq!(key, "mykey");
+                assert_eq!(value, Bytes::from("hello"));
+                assert_eq!(ttl, Some(std::time::Duration::from_millis(3000)));
+            }
+            other => panic!("Expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_with_unknown_option_is_error() {
+        assert!(matches!(
+            parse("SET k v XX 5"),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn set_with_ex_missing_value_is_error() {
+        assert!(matches!(
+            parse("SET k v EX"),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn set_with_ex_non_integer_is_error() {
+        assert!(matches!(
+            parse("SET k v EX abc"),
+            Err(ParseError::SyntaxError(_))
+        ));
     }
 
     #[test]
@@ -462,7 +884,10 @@ mod tests {
 
     #[test]
     fn unknown_command() {
-        assert!(matches!(parse("FOOBAR"), Err(ParseError::UnknownCommand(_))));
+        assert!(matches!(
+            parse("FOOBAR"),
+            Err(ParseError::UnknownCommand(_))
+        ));
     }
 
     #[test]
@@ -531,7 +956,10 @@ mod tests {
 
     #[test]
     fn parse_bytes_unknown() {
-        assert!(matches!(parse_bytes(b"FOO"), Err(ParseError::UnknownCommand(_))));
+        assert!(matches!(
+            parse_bytes(b"FOO"),
+            Err(ParseError::UnknownCommand(_))
+        ));
     }
 
     // --- Frame parser tests ---
@@ -607,9 +1035,42 @@ mod tests {
         let input = b"*3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$5\r\nhello\r\n";
         match try_parse_frame(input).unwrap() {
             FrameResult::Complete { command, .. } => match command {
-                Command::Set { key, value, .. } => {
+                Command::Set { key, value, ttl } => {
                     assert_eq!(key, "mykey");
                     assert_eq!(value, Bytes::from("hello"));
+                    assert!(ttl.is_none());
+                }
+                other => panic!("Expected Set, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_set_with_ex() {
+        let input = b"*5\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$5\r\nhello\r\n$2\r\nEX\r\n$2\r\n60\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Set { key, value, ttl } => {
+                    assert_eq!(key, "mykey");
+                    assert_eq!(value, Bytes::from("hello"));
+                    assert_eq!(ttl, Some(std::time::Duration::from_secs(60)));
+                }
+                other => panic!("Expected Set, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_set_with_px() {
+        let input = b"*5\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$5\r\nhello\r\n$2\r\nPX\r\n$4\r\n3000\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Set { key, value, ttl } => {
+                    assert_eq!(key, "mykey");
+                    assert_eq!(value, Bytes::from("hello"));
+                    assert_eq!(ttl, Some(std::time::Duration::from_millis(3000)));
                 }
                 other => panic!("Expected Set, got {other:?}"),
             },
@@ -660,13 +1121,19 @@ mod tests {
     #[test]
     fn resp_empty_array() {
         let input = b"*0\r\n";
-        assert!(matches!(try_parse_frame(input), Err(ParseError::EmptyCommand)));
+        assert!(matches!(
+            try_parse_frame(input),
+            Err(ParseError::EmptyCommand)
+        ));
     }
 
     #[test]
     fn resp_null_array() {
         let input = b"*-1\r\n";
-        assert!(matches!(try_parse_frame(input), Err(ParseError::SyntaxError(_))));
+        assert!(matches!(
+            try_parse_frame(input),
+            Err(ParseError::SyntaxError(_))
+        ));
     }
 
     #[test]
@@ -718,12 +1185,293 @@ mod tests {
     #[test]
     fn resp_unknown_command() {
         let input = b"*1\r\n$3\r\nFOO\r\n";
-        assert!(matches!(try_parse_frame(input), Err(ParseError::UnknownCommand(_))));
+        assert!(matches!(
+            try_parse_frame(input),
+            Err(ParseError::UnknownCommand(_))
+        ));
     }
 
     #[test]
     fn resp_wrong_arg_count() {
         let input = b"*1\r\n$3\r\nGET\r\n";
-        assert!(matches!(try_parse_frame(input), Err(ParseError::SyntaxError(_))));
+        assert!(matches!(
+            try_parse_frame(input),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    // --- EXISTS, TTL, EXPIRE, FLUSHDB, KEYS tests ---
+
+    #[test]
+    fn exists_valid() {
+        let cmd = parse("EXISTS mykey").unwrap();
+        assert!(matches!(cmd, Command::Exists { ref key } if key == "mykey"));
+    }
+
+    #[test]
+    fn exists_missing_key() {
+        assert!(matches!(parse("EXISTS"), Err(ParseError::SyntaxError(_))));
+    }
+
+    #[test]
+    fn ttl_valid() {
+        let cmd = parse("TTL mykey").unwrap();
+        assert!(matches!(cmd, Command::Ttl { ref key } if key == "mykey"));
+    }
+
+    #[test]
+    fn ttl_missing_key() {
+        assert!(matches!(parse("TTL"), Err(ParseError::SyntaxError(_))));
+    }
+
+    #[test]
+    fn expire_valid() {
+        match parse("EXPIRE mykey 60").unwrap() {
+            Command::Expire { key, seconds } => {
+                assert_eq!(key, "mykey");
+                assert_eq!(seconds, 60);
+            }
+            other => panic!("Expected Expire, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expire_missing_args() {
+        assert!(matches!(parse("EXPIRE"), Err(ParseError::SyntaxError(_))));
+        assert!(matches!(
+            parse("EXPIRE key"),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn expire_non_integer() {
+        assert!(matches!(
+            parse("EXPIRE key abc"),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn flushdb_valid() {
+        assert!(matches!(parse("FLUSHDB"), Ok(Command::FlushDb)));
+    }
+
+    #[test]
+    fn flushdb_extra_args() {
+        assert!(matches!(
+            parse("FLUSHDB extra"),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn keys_valid() {
+        assert!(matches!(parse("KEYS"), Ok(Command::Keys)));
+    }
+
+    #[test]
+    fn keys_extra_args() {
+        assert!(matches!(parse("KEYS *"), Err(ParseError::SyntaxError(_))));
+    }
+
+    #[test]
+    fn resp_exists() {
+        let input = b"*2\r\n$6\r\nEXISTS\r\n$3\r\nkey\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::Exists { ref key } if key == "key"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_ttl() {
+        let input = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::Ttl { ref key } if key == "key"));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_expire() {
+        let input = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$2\r\n60\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Expire { key, seconds } => {
+                    assert_eq!(key, "key");
+                    assert_eq!(seconds, 60);
+                }
+                other => panic!("Expected Expire, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_flushdb() {
+        let input = b"*1\r\n$7\r\nFLUSHDB\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::FlushDb));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_keys() {
+        let input = b"*1\r\n$4\r\nKEYS\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => {
+                assert!(matches!(command, Command::Keys));
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    // --- MGET, MSET tests ---
+
+    #[test]
+    fn mget_valid_single_key() {
+        match parse("MGET k1").unwrap() {
+            Command::Mget { keys } => assert_eq!(keys, vec!["k1"]),
+            other => panic!("Expected Mget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mget_valid_multiple_keys() {
+        match parse("MGET k1 k2 k3").unwrap() {
+            Command::Mget { keys } => assert_eq!(keys, vec!["k1", "k2", "k3"]),
+            other => panic!("Expected Mget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mget_no_keys() {
+        assert!(matches!(parse("MGET"), Err(ParseError::SyntaxError(_))));
+    }
+
+    #[test]
+    fn mset_valid_single_pair() {
+        match parse("MSET k1 v1").unwrap() {
+            Command::Mset { pairs } => {
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].0, "k1");
+                assert_eq!(pairs[0].1, Bytes::from("v1"));
+            }
+            other => panic!("Expected Mset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mset_valid_multiple_pairs() {
+        match parse("MSET k1 v1 k2 v2 k3 v3").unwrap() {
+            Command::Mset { pairs } => {
+                assert_eq!(pairs.len(), 3);
+                assert_eq!(pairs[0], ("k1".into(), Bytes::from("v1")));
+                assert_eq!(pairs[1], ("k2".into(), Bytes::from("v2")));
+                assert_eq!(pairs[2], ("k3".into(), Bytes::from("v3")));
+            }
+            other => panic!("Expected Mset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mset_no_args() {
+        assert!(matches!(parse("MSET"), Err(ParseError::SyntaxError(_))));
+    }
+
+    #[test]
+    fn mset_odd_args() {
+        assert!(matches!(
+            parse("MSET k1 v1 k2"),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn resp_mget_single() {
+        let input = b"*2\r\n$4\r\nMGET\r\n$2\r\nk1\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Mget { keys } => assert_eq!(keys, vec!["k1"]),
+                other => panic!("Expected Mget, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_mget_multiple() {
+        let input = b"*4\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\nk3\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                match command {
+                    Command::Mget { keys } => assert_eq!(keys, vec!["k1", "k2", "k3"]),
+                    other => panic!("Expected Mget, got {other:?}"),
+                }
+                assert_eq!(consumed, input.len());
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_mget_no_keys() {
+        let input = b"*1\r\n$4\r\nMGET\r\n";
+        assert!(matches!(
+            try_parse_frame(input),
+            Err(ParseError::SyntaxError(_))
+        ));
+    }
+
+    #[test]
+    fn resp_mset_single_pair() {
+        let input = b"*3\r\n$4\r\nMSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { command, .. } => match command {
+                Command::Mset { pairs } => {
+                    assert_eq!(pairs.len(), 1);
+                    assert_eq!(pairs[0].0, "k1");
+                    assert_eq!(pairs[0].1, Bytes::from("v1"));
+                }
+                other => panic!("Expected Mset, got {other:?}"),
+            },
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_mset_multiple_pairs() {
+        let input = b"*5\r\n$4\r\nMSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n$2\r\nv2\r\n";
+        match try_parse_frame(input).unwrap() {
+            FrameResult::Complete { consumed, command } => {
+                match command {
+                    Command::Mset { pairs } => {
+                        assert_eq!(pairs.len(), 2);
+                        assert_eq!(pairs[0], ("k1".into(), Bytes::from("v1")));
+                        assert_eq!(pairs[1], ("k2".into(), Bytes::from("v2")));
+                    }
+                    other => panic!("Expected Mset, got {other:?}"),
+                }
+                assert_eq!(consumed, input.len());
+            }
+            other => panic!("Expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resp_mset_odd_args() {
+        let input = b"*4\r\n$4\r\nMSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n";
+        assert!(matches!(
+            try_parse_frame(input),
+            Err(ParseError::SyntaxError(_))
+        ));
     }
 }

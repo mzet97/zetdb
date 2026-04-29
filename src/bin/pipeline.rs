@@ -80,7 +80,7 @@ async fn pipeline_bench(
                 }
 
                 local_count += pipeline_size as u64;
-                if local_count % 10_000 == 0 {
+                if local_count.is_multiple_of(10_000) {
                     total_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }
@@ -100,9 +100,7 @@ async fn pipeline_bench(
     let ops = total_ops.load(Ordering::Relaxed);
     let ops_per_sec = ops as f64 / elapsed.as_secs_f64();
 
-    println!(
-        "{label:50} | {ops:>10} ops | {ops_per_sec:>12.0} ops/s"
-    );
+    println!("{label:50} | {ops:>10} ops | {ops_per_sec:>12.0} ops/s");
 }
 
 /// Mixed pipelined workload: writers + readers concurrently
@@ -137,22 +135,30 @@ async fn pipeline_mixed(
             let mut key = base;
 
             loop {
-                if !running.load(Ordering::Relaxed) { break; }
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 for _ in 0..pipeline_size {
                     let cmd = format!("SET pw:{key} v:{key}\r\n");
                     key += 1;
-                    if writer.write_all(cmd.as_bytes()).await.is_err() { return; }
+                    if writer.write_all(cmd.as_bytes()).await.is_err() {
+                        return;
+                    }
                 }
-                if writer.flush().await.is_err() { return; }
+                if writer.flush().await.is_err() {
+                    return;
+                }
 
                 for _ in 0..pipeline_size {
                     line.clear();
-                    if buf_reader.read_line(&mut line).await.is_err() { return; }
+                    if buf_reader.read_line(&mut line).await.is_err() {
+                        return;
+                    }
                 }
 
                 count += pipeline_size as u64;
-                if count % 10_000 == 0 {
+                if count.is_multiple_of(10_000) {
                     write_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }
@@ -174,22 +180,30 @@ async fn pipeline_mixed(
             let mut key = 0u64;
 
             loop {
-                if !running.load(Ordering::Relaxed) { break; }
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 for _ in 0..pipeline_size {
                     let cmd = format!("GET pp:{}\r\n", key % n_keys);
                     key += 1;
-                    if writer.write_all(cmd.as_bytes()).await.is_err() { return; }
+                    if writer.write_all(cmd.as_bytes()).await.is_err() {
+                        return;
+                    }
                 }
-                if writer.flush().await.is_err() { return; }
+                if writer.flush().await.is_err() {
+                    return;
+                }
 
                 for _ in 0..pipeline_size {
                     line.clear();
-                    if buf_reader.read_line(&mut line).await.is_err() { return; }
+                    if buf_reader.read_line(&mut line).await.is_err() {
+                        return;
+                    }
                 }
 
                 count += pipeline_size as u64;
-                if count % 10_000 == 0 {
+                if count.is_multiple_of(10_000) {
                     read_ops.fetch_add(10_000, Ordering::Relaxed);
                 }
             }
@@ -211,9 +225,7 @@ async fn pipeline_mixed(
     let rs = r as f64 / elapsed.as_secs_f64();
     let ts = (w + r) as f64 / elapsed.as_secs_f64();
 
-    println!(
-        "{label:50} | {ws:>10.0} w/s | {rs:>10.0} r/s | {ts:>12.0} total/s"
-    );
+    println!("{label:50} | {ws:>10.0} w/s | {rs:>10.0} r/s | {ts:>12.0} total/s");
 }
 
 async fn prepopulate(addr: &str, n_keys: u64) {
@@ -246,7 +258,7 @@ async fn main() {
     let config = Config {
         bind_addr: "127.0.0.1".into(),
         port,
-        read_timeout: Duration::from_secs(300),
+        read_timeout_secs: 300,
         ..Default::default()
     };
     let engine = Arc::new(DashMapEngine::new());
@@ -309,7 +321,10 @@ async fn main() {
 
     // --- MIXED with best pipeline sizes ---
     println!("--- MIXED — Pipelined ---");
-    println!("{:50} | {:>10}     | {:>10}     | {:>12}", "test", "writes/s", "reads/s", "total/s");
+    println!(
+        "{:50} | {:>10}     | {:>10}     | {:>12}",
+        "test", "writes/s", "reads/s", "total/s"
+    );
     println!("{}", "-".repeat(110));
 
     for &pipe in &[50, 100, 200] {

@@ -13,9 +13,16 @@ pub enum CommandType {
     Incr = 4,
     Info = 5,
     DbSize = 6,
+    Exists = 7,
+    Ttl = 8,
+    Expire = 9,
+    FlushDb = 10,
+    Keys = 11,
+    Mget = 12,
+    Mset = 13,
 }
 
-const NUM_COMMAND_TYPES: usize = 7;
+const NUM_COMMAND_TYPES: usize = 14;
 
 pub struct Metrics {
     pub commands_total: AtomicU64,
@@ -33,15 +40,7 @@ static METRICS: OnceLock<Metrics> = OnceLock::new();
 pub fn metrics() -> &'static Metrics {
     METRICS.get_or_init(|| Metrics {
         commands_total: AtomicU64::new(0),
-        commands_by_type: [
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-        ],
+        commands_by_type: std::array::from_fn(|_| AtomicU64::new(0)),
         connections_total: AtomicU64::new(0),
         connections_active: AtomicU64::new(0),
         keyspace_hits: AtomicU64::new(0),
@@ -130,15 +129,7 @@ mod tests {
         pub fn new_for_test() -> Self {
             Self {
                 commands_total: AtomicU64::new(0),
-                commands_by_type: [
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                ],
+                commands_by_type: std::array::from_fn(|_| AtomicU64::new(0)),
                 connections_total: AtomicU64::new(0),
                 connections_active: AtomicU64::new(0),
                 keyspace_hits: AtomicU64::new(0),

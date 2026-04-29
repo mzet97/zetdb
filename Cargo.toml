@@ -2,7 +2,21 @@
 name = "zetdb"
 version = "0.1.0"
 edition = "2021"
-description = "In-memory KV store estilo Redis, implementado em Rust"
+description = "High-performance in-memory key-value store inspired by Redis, implemented in Rust"
+license = "MIT"
+repository = "https://github.com/mzet97/zetdb"
+readme = "README.md"
+keywords = ["redis", "kv-store", "database", "in-memory", "async"]
+categories = ["database-implementations", "network-programming"]
+exclude = ["docs/", "target/", ".github/", "benches/"]
+
+[lib]
+name = "zetdb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zetdb"
+path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -15,6 +29,7 @@ crc32fast = "1"
 itoa = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
 
 [profile.release]
 opt-level = 3

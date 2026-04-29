@@ -24,4 +24,8 @@ impl ValueEntry {
     pub fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|exp| Instant::now() >= exp)
     }
+
+    pub fn is_expired_at(&self, now: Instant) -> bool {
+        self.expires_at.is_some_and(|exp| now >= exp)
+    }
 }

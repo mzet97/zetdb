@@ -5,13 +5,16 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
+use crate::domain::value::ValueEntry;
 use crate::storage::dashmap_engine::DashMapEngine;
 use crate::storage::engine::KvEngine;
-use crate::domain::value::ValueEntry;
 
 const CMD_SET: u8 = 0x01;
 const CMD_DEL: u8 = 0x02;
 const CMD_INCR: u8 = 0x03;
+const CMD_EXPIRE: u8 = 0x04;
+const CMD_FLUSHDB: u8 = 0x05;
+const CMD_MSET: u8 = 0x06;
 
 pub struct AofWriter {
     file: Mutex<fs::File>,
@@ -41,17 +44,17 @@ impl AofWriter {
         file.write_all(entry)?;
 
         match self.fsync_policy {
-            crate::config::FsyncPolicy::EveryWrite => {
+            crate::config::FsyncPolicy::Always => {
                 file.sync_all()?;
             }
-            crate::config::FsyncPolicy::EverySecond => {
+            crate::config::FsyncPolicy::Everysec => {
                 let mut last = self.last_fsync.lock().unwrap();
                 if last.elapsed() >= Duration::from_secs(1) {
                     file.sync_all()?;
                     *last = Instant::now();
                 }
             }
-            crate::config::FsyncPolicy::Never => {}
+            crate::config::FsyncPolicy::No => {}
         }
 
         Ok(())
@@ -59,7 +62,7 @@ impl AofWriter {
 
     /// Force fsync regardless of policy (for background ticker).
     pub fn flush_if_needed(&self) -> io::Result<()> {
-        if matches!(self.fsync_policy, crate::config::FsyncPolicy::EverySecond) {
+        if matches!(self.fsync_policy, crate::config::FsyncPolicy::Everysec) {
             let mut last = self.last_fsync.lock().unwrap();
             if last.elapsed() >= Duration::from_secs(1) {
                 self.file.lock().unwrap().sync_all()?;
@@ -142,8 +145,7 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                 if pos + 4 > data.len() {
                     break;
                 }
-                let val_len =
-                    u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+                let val_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
                 pos += 4;
                 if pos + val_len > data.len() {
                     break;
@@ -165,7 +167,13 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                 };
 
                 engine
-                    .set(key, ValueEntry { data: value, expires_at })
+                    .set(
+                        key,
+                        ValueEntry {
+                            data: value,
+                            expires_at,
+                        },
+                    )
                     .ok();
             }
             CMD_DEL => {
@@ -195,6 +203,67 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                 pos += key_len;
 
                 engine.incr(&key).ok();
+            }
+            CMD_EXPIRE => {
+                if pos + 2 > data.len() {
+                    break;
+                }
+                let key_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+                pos += 2;
+                if pos + key_len > data.len() {
+                    break;
+                }
+                let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
+                pos += key_len;
+
+                if pos + 8 > data.len() {
+                    break;
+                }
+                let seconds = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+                pos += 8;
+
+                engine.expire(&key, seconds);
+            }
+            CMD_FLUSHDB => {
+                engine.clear();
+            }
+            CMD_MSET => {
+                // Count of pairs
+                if pos + 2 > data.len() {
+                    break;
+                }
+                let count = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+                pos += 2;
+
+                for _ in 0..count {
+                    // Key
+                    if pos + 2 > data.len() {
+                        break;
+                    }
+                    let key_len =
+                        u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+                    pos += 2;
+                    if pos + key_len > data.len() {
+                        break;
+                    }
+                    let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
+                    pos += key_len;
+
+                    // Value
+                    if pos + 4 > data.len() {
+                        break;
+                    }
+                    let val_len =
+                        u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+                    pos += 4;
+                    if pos + val_len > data.len() {
+                        break;
+                    }
+                    let value = Bytes::copy_from_slice(&data[pos..pos + val_len]);
+                    pos += val_len;
+
+                    engine.set(key, ValueEntry::new(value)).ok();
+                }
             }
             _ => break, // Unknown command type, stop replay
         }
@@ -298,12 +367,16 @@ mod tests {
         ensure_dir(&path);
         let _ = fs::remove_file(&path);
 
-        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::EveryWrite).unwrap();
+        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::Always).unwrap();
 
         // Build entries manually
         let engine = DashMapEngine::new();
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
 
         // Serialize and append
         let mut buf = Vec::new();
@@ -334,7 +407,7 @@ mod tests {
         ensure_dir(&path);
         let _ = fs::remove_file(&path);
 
-        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::Never).unwrap();
+        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::No).unwrap();
 
         let mut buf = Vec::new();
         buf.push(CMD_SET);
@@ -357,7 +430,7 @@ mod tests {
         ensure_dir(&path);
         let _ = fs::remove_file(&path);
 
-        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::Never).unwrap();
+        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::No).unwrap();
 
         // SET k1 v1
         let mut buf = Vec::new();
@@ -385,7 +458,7 @@ mod tests {
         ensure_dir(&path);
         let _ = fs::remove_file(&path);
 
-        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::Never).unwrap();
+        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::No).unwrap();
 
         // INCR counter x3
         for _ in 0..3 {
@@ -398,7 +471,10 @@ mod tests {
         let engine = DashMapEngine::new();
         replay_aof(&engine, &path).unwrap();
 
-        assert_eq!(engine.get("counter").unwrap().unwrap().data, Bytes::from("3"));
+        assert_eq!(
+            engine.get("counter").unwrap().unwrap().data,
+            Bytes::from("3")
+        );
     }
 
     #[test]
@@ -408,8 +484,12 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let engine = DashMapEngine::new();
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
 
         rewrite_aof(&engine, &path).unwrap();
 
@@ -433,7 +513,7 @@ mod tests {
         ensure_dir(&path);
         let _ = fs::remove_file(&path);
 
-        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::Never).unwrap();
+        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::No).unwrap();
 
         let binary: Vec<u8> = vec![0x00, 0xFF, 0xDE, 0xAD, 0xBE, 0xEF];
         let mut buf = Vec::new();
@@ -450,5 +530,30 @@ mod tests {
             engine.get("bin").unwrap().unwrap().data.as_ref(),
             binary.as_slice()
         );
+    }
+
+    #[test]
+    fn mset_replay() {
+        let path = temp_path("mset");
+        ensure_dir(&path);
+        let _ = fs::remove_file(&path);
+
+        let writer = AofWriter::new(&path, crate::config::FsyncPolicy::No).unwrap();
+
+        // MSET with 2 pairs: k1=v1, k2=v2
+        let mut buf = Vec::new();
+        buf.push(CMD_MSET);
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        encode_key(&mut buf, "k1");
+        encode_value(&mut buf, b"v1");
+        encode_key(&mut buf, "k2");
+        encode_value(&mut buf, b"v2");
+        writer.append_raw(&buf).unwrap();
+
+        let engine = DashMapEngine::new();
+        let count = replay_aof(&engine, &path).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(engine.get("k1").unwrap().unwrap().data, Bytes::from("v1"));
+        assert_eq!(engine.get("k2").unwrap().unwrap().data, Bytes::from("v2"));
     }
 }
