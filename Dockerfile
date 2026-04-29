@@ -5,7 +5,11 @@ WORKDIR /usr/src/zetdb
 
 # Cache dependencies
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+RUN mkdir -p src/bin && echo "fn main() {}" > src/main.rs && \
+    echo "" > src/lib.rs && \
+    for f in bench maxthroughput pipeline redis_compare saturation; do \
+      echo "fn main() {}" > "src/bin/${f}.rs"; \
+    done && \
     cargo build --release && rm -rf src
 
 # Build actual binary
