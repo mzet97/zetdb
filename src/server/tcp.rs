@@ -13,20 +13,18 @@ use crate::storage::engine::KvEngine;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Run the TCP server with graceful shutdown support.
-/// Returns when the shutdown signal is received and all connections have drained.
-pub async fn run_server_with_shutdown(
-    config: Config,
+/// Run the TCP server with a pre-bound listener and graceful shutdown.
+pub async fn run_server_with_listener(
+    listener: TcpListener,
     engine: Arc<dyn KvEngine>,
     aof: Option<Arc<AofWriter>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    read_timeout: Duration,
+    max_conns: usize,
+    metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = TcpListener::bind((config.bind_addr.as_str(), config.port)).await?;
     let local_addr = listener.local_addr()?;
-    let read_timeout = config.read_timeout();
-    let metrics_enabled = config.metrics_enabled;
     let active_conns = Arc::new(AtomicUsize::new(0));
-    let max_conns = config.max_connections;
 
     if max_conns > 0 {
         log::info!("max connections: {max_conns}");
@@ -78,6 +76,27 @@ pub async fn run_server_with_shutdown(
     }
     log::info!("all connections drained, server stopped");
     Ok(())
+}
+
+/// Run the TCP server with graceful shutdown support.
+/// Returns when the shutdown signal is received and all connections have drained.
+pub async fn run_server_with_shutdown(
+    config: Config,
+    engine: Arc<dyn KvEngine>,
+    aof: Option<Arc<AofWriter>>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = TcpListener::bind((config.bind_addr.as_str(), config.port)).await?;
+    run_server_with_listener(
+        listener,
+        engine,
+        aof,
+        shutdown_rx,
+        config.read_timeout(),
+        config.max_connections,
+        config.metrics_enabled,
+    )
+    .await
 }
 
 /// Convenience wrapper for tests — runs until aborted or connection error.
@@ -551,7 +570,10 @@ mod tests {
     async fn e2e_snapshot_persistence() {
         use crate::storage::snapshot;
 
-        let port = find_available_port();
+        // Pre-bind listener atomically to prevent port collision in parallel tests
+        let tokio_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = tokio_listener.local_addr().unwrap().port();
+
         let snap_path = format!("target/test_e2e/snapshot_restart_{port}.zdb");
         // Ensure clean state
         let _ = std::fs::remove_file(&snap_path);
@@ -562,15 +584,19 @@ mod tests {
         // --- Phase 1: start server, write data, stop ---
         let engine = Arc::new(DashMapEngine::new());
         {
-            let config = Config {
-                bind_addr: "127.0.0.1".into(),
-                port,
-                ..Default::default()
-            };
             let (tx, rx) = tokio::sync::watch::channel(false);
             let eng = engine.clone();
             let handle = tokio::spawn(async move {
-                let _ = run_server_with_shutdown(config, eng, None, rx).await;
+                let _ = run_server_with_listener(
+                    tokio_listener,
+                    eng,
+                    None,
+                    rx,
+                    Duration::from_secs(300),
+                    0,
+                    false,
+                )
+                .await;
             });
             tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -612,26 +638,15 @@ mod tests {
     async fn e2e_aof_persistence() {
         use crate::storage::aof;
 
-        let port = find_available_port();
+        // Pre-bind listener atomically to prevent port collision in parallel tests
+        let tokio_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = tokio_listener.local_addr().unwrap().port();
+
         let aof_path = format!("target/test_e2e/aof_restart_{port}.zdb");
         let _ = std::fs::remove_file(&aof_path);
         if let Some(dir) = std::path::Path::new(&aof_path).parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-
-        let aof_config = crate::config::AofConfig {
-            aof_enabled: true,
-            aof_path: aof_path.clone(),
-            aof_fsync: crate::config::FsyncPolicy::Always,
-            aof_rewrite_threshold_mb: 64,
-        };
-
-        let config = Config {
-            bind_addr: "127.0.0.1".into(),
-            port,
-            aof: aof_config,
-            ..Default::default()
-        };
 
         // --- Phase 1: start server with AOF, write data, stop ---
         {
@@ -643,7 +658,16 @@ mod tests {
             let eng = engine.clone();
             let aw = aof_writer.clone();
             let handle = tokio::spawn(async move {
-                let _ = run_server_with_shutdown(config, eng, Some(aw), rx).await;
+                let _ = run_server_with_listener(
+                    tokio_listener,
+                    eng,
+                    Some(aw),
+                    rx,
+                    Duration::from_secs(300),
+                    0,
+                    false,
+                )
+                .await;
             });
             tokio::time::sleep(Duration::from_millis(50)).await;
 
