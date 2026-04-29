@@ -14,7 +14,7 @@ RUN mkdir -p src/bin && echo "fn main() {}" > src/main.rs && \
 
 # Build actual binary
 COPY . .
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # --- Stage 2: Runtime ---
 FROM debian:bookworm-slim
