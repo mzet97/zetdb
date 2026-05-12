@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  zetdb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zetdb:latest
+    container_name: zetdb
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - zetdb-data:/data
+    environment:
+      - ZETDB_BIND_ADDR=0.0.0.0
+      - ZETDB_PORT=6379
+      - ZETDB_READ_TIMEOUT=30
+      - ZETDB_WRITE_TIMEOUT=30
+      - ZETDB_SNAPSHOT_PATH=/data/dump.zdb
+      - ZETDB_SNAPSHOT_INTERVAL=60
+      - ZETDB_AOF_PATH=/data/appendonly.zdb
+      - ZETDB_AOF_FSYNC=everysec
+      - ZETDB_AOF_REWRITE_THRESHOLD=64
+      - ZETDB_MAX_KEYS=0
+      - ZETDB_METRICS=false
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'PING' | nc -w 1 localhost 6379 | grep -q 'PONG'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - zetdb-net
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+
+volumes:
+  zetdb-data:
+    driver: local
+
+networks:
+  zetdb-net:
+    driver: bridge

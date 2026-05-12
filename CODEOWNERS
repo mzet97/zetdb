@@ -1,0 +1,45 @@
+# CODEOWNERS
+
+# Default owner for everything
+* @mzet97
+
+# Domain types, commands, errors
+docs/SPECIFICATION.md @mzet97
+src/domain/ @mzet97
+docs/adr/ @mzet97
+
+# Storage engine, snapshot, AOF, TTL
+src/storage/ @mzet97
+docs/SNAPSHOT.md @mzet97
+docs/AOF.md @mzet97
+
+# Protocol parser and response serializer
+src/protocol/ @mzet97
+
+# TCP server and session handling
+src/server/ @mzet97
+
+# Configuration management
+src/config/ @mzet97
+
+# Observability and metrics
+src/observability/ @mzet97
+docs/OBSERVABILITY.md @mzet97
+
+# CI/CD pipelines
+.github/workflows/ @mzet97
+
+# Docker
+Dockerfile @mzet97
+docker-compose.yml @mzet97
+
+# Documentation and governance
+docs/ @mzet97
+README.md @mzet97
+CONTRIBUTING.md @mzet97
+SECURITY.md @mzet97
+CHANGELOG.md @mzet97
+
+# Build and dependencies
+Cargo.toml @mzet97
+Cargo.lock @mzet97

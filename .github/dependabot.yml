@@ -1,0 +1,41 @@
+version: 2
+updates:
+  # Rust / Cargo dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      tokio:
+        patterns:
+          - "tokio*"
+      serde:
+        patterns:
+          - "serde*"
+      clap:
+        patterns:
+          - "clap*"
+    labels:
+      - "dependencies"
+      - "cargo"
+
+  # Docker dependencies
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"

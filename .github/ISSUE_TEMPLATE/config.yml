@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/mzet97/zetdb/security/policy
+    about: Please report security vulnerabilities here. Do NOT open a public issue.
+  - name: Question / Discussion
+    url: https://github.com/mzet97/zetdb/discussions
+    about: Ask questions or start discussions here.
