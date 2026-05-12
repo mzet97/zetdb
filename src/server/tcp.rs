@@ -14,12 +14,14 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Run the TCP server with a pre-bound listener and graceful shutdown.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server_with_listener(
     listener: TcpListener,
     engine: Arc<dyn KvEngine>,
     aof: Option<Arc<AofWriter>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     read_timeout: Duration,
+    write_timeout: Duration,
     max_conns: usize,
     metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -31,7 +33,7 @@ pub async fn run_server_with_listener(
     }
 
     log::info!("ZetDB listening on {local_addr}");
-    log::info!("read timeout: {read_timeout:?}");
+    log::info!("read timeout: {read_timeout:?}, write timeout: {write_timeout:?}");
 
     loop {
         tokio::select! {
@@ -50,7 +52,7 @@ pub async fn run_server_with_listener(
                 let conns = active_conns.clone();
                 conns.fetch_add(1, Ordering::Relaxed);
                 tokio::spawn(async move {
-                    handle_session(stream, peer, engine, read_timeout, aof, metrics_enabled).await;
+                    handle_session(stream, peer, engine, read_timeout, write_timeout, aof, metrics_enabled).await;
                     conns.fetch_sub(1, Ordering::Relaxed);
                 });
             }
@@ -93,6 +95,7 @@ pub async fn run_server_with_shutdown(
         aof,
         shutdown_rx,
         config.read_timeout(),
+        config.write_timeout(),
         config.max_connections,
         config.metrics_enabled,
     )
@@ -593,6 +596,7 @@ mod tests {
                     None,
                     rx,
                     Duration::from_secs(300),
+                    Duration::from_secs(30),
                     0,
                     false,
                 )
@@ -664,6 +668,7 @@ mod tests {
                     Some(aw),
                     rx,
                     Duration::from_secs(300),
+                    Duration::from_secs(30),
                     0,
                     false,
                 )

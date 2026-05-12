@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 pub struct ValueEntry {
     pub data: Bytes,
     pub expires_at: Option<Instant>,
+    /// Approximate creation / last-write time for eviction sampling.
+    pub created_at: Instant,
 }
 
 impl ValueEntry {
@@ -11,6 +13,7 @@ impl ValueEntry {
         Self {
             data,
             expires_at: None,
+            created_at: Instant::now(),
         }
     }
 
@@ -18,6 +21,7 @@ impl ValueEntry {
         Self {
             data,
             expires_at: Some(Instant::now() + ttl),
+            created_at: Instant::now(),
         }
     }
 

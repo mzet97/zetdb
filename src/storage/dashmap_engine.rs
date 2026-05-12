@@ -10,17 +10,54 @@ use crate::storage::engine::KvEngine;
 
 pub struct DashMapEngine {
     map: dashmap::DashMap<String, ValueEntry>,
+    max_keys: usize,
 }
 
 impl DashMapEngine {
     pub fn new() -> Self {
         Self {
             map: dashmap::DashMap::new(),
+            max_keys: 0,
+        }
+    }
+
+    pub fn with_max_keys(max_keys: usize) -> Self {
+        Self {
+            map: dashmap::DashMap::new(),
+            max_keys,
         }
     }
 
     pub fn sweep_expired(&self) {
         self.map.retain(|_, v| !v.is_expired());
+    }
+
+    /// Evict one key if we are at or over max_keys.
+    /// Samples up to 5 live entries and removes the oldest by created_at.
+    fn evict_one_if_needed(&self) {
+        if self.max_keys == 0 || self.map.len() < self.max_keys {
+            return;
+        }
+        let now = Instant::now();
+        let mut oldest_key: Option<String> = None;
+        let mut oldest_time = now;
+        let mut sampled = 0;
+        for entry in self.map.iter() {
+            if entry.value().is_expired_at(now) {
+                continue;
+            }
+            if oldest_key.is_none() || entry.value().created_at < oldest_time {
+                oldest_key = Some(entry.key().clone());
+                oldest_time = entry.value().created_at;
+            }
+            sampled += 1;
+            if sampled >= 5 {
+                break;
+            }
+        }
+        if let Some(key) = oldest_key {
+            self.map.remove(&key);
+        }
     }
 
     /// Iterate over non-expired entries for snapshot dump.
@@ -78,10 +115,17 @@ impl KvEngine for DashMapEngine {
         Ok(Some(ValueEntry {
             data: entry.data.clone(),
             expires_at: entry.expires_at,
+            created_at: entry.created_at,
         }))
     }
 
     fn set(&self, key: String, value: ValueEntry) -> Result<(), EngineError> {
+        if self.max_keys > 0 && !self.map.contains_key(&key) {
+            self.evict_one_if_needed();
+            if self.map.len() >= self.max_keys {
+                return Err(EngineError::OutOfMemory);
+            }
+        }
         self.map.insert(key, value);
         Ok(())
     }
@@ -96,6 +140,9 @@ impl KvEngine for DashMapEngine {
             Entry::Occupied(mut occ) => {
                 if occ.get().is_expired() {
                     occ.remove();
+                    if self.max_keys > 0 && self.map.len() >= self.max_keys {
+                        return Err(EngineError::OutOfMemory);
+                    }
                     self.map
                         .insert(key.to_string(), ValueEntry::new(Bytes::from_static(b"1")));
                     return Ok(1);
@@ -108,9 +155,16 @@ impl KvEngine for DashMapEngine {
                 let new_val = val + 1;
                 let mut itoa_buf = itoa::Buffer::new();
                 occ.get_mut().data = Bytes::copy_from_slice(itoa_buf.format(new_val).as_bytes());
+                // created_at and expires_at are preserved automatically
                 Ok(new_val)
             }
             Entry::Vacant(vac) => {
+                if self.max_keys > 0 && self.map.len() >= self.max_keys {
+                    self.evict_one_if_needed();
+                    if self.map.len() >= self.max_keys {
+                        return Err(EngineError::OutOfMemory);
+                    }
+                }
                 vac.insert(ValueEntry::new(Bytes::from_static(b"1")));
                 Ok(1)
             }
@@ -541,5 +595,53 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results[0].is_none());
         assert!(results[1].is_none());
+    }
+
+    #[test]
+    fn max_keys_evicts_oldest() {
+        let engine = DashMapEngine::with_max_keys(2);
+        engine
+            .set("a".into(), ValueEntry::new(Bytes::from("1")))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        engine
+            .set("b".into(), ValueEntry::new(Bytes::from("2")))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        // Adding c should evict the oldest (a)
+        engine
+            .set("c".into(), ValueEntry::new(Bytes::from("3")))
+            .unwrap();
+
+        assert_eq!(engine.len(), 2);
+        assert!(engine.get("a").unwrap().is_none());
+        assert_eq!(engine.get("b").unwrap().unwrap().data, Bytes::from("2"));
+        assert_eq!(engine.get("c").unwrap().unwrap().data, Bytes::from("3"));
+    }
+
+    #[test]
+    fn max_keys_allows_overwrite() {
+        let engine = DashMapEngine::with_max_keys(1);
+        engine
+            .set("a".into(), ValueEntry::new(Bytes::from("1")))
+            .unwrap();
+        // Overwriting existing key should succeed even at limit
+        engine
+            .set("a".into(), ValueEntry::new(Bytes::from("2")))
+            .unwrap();
+
+        assert_eq!(engine.len(), 1);
+        assert_eq!(engine.get("a").unwrap().unwrap().data, Bytes::from("2"));
+    }
+
+    #[test]
+    fn max_keys_zero_is_unlimited() {
+        let engine = DashMapEngine::new(); // max_keys = 0
+        for i in 0..100 {
+            engine
+                .set(format!("k{i}"), ValueEntry::new(Bytes::from(format!("v{i}"))))
+                .unwrap();
+        }
+        assert_eq!(engine.len(), 100);
     }
 }

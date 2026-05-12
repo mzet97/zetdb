@@ -14,6 +14,7 @@ use crate::storage::aof::AofWriter;
 use crate::storage::engine::KvEngine;
 
 const MAX_READ_BUF: usize = 1024 * 1024; // 1MB safety limit
+const MAX_WRITE_BUF: usize = 1024 * 1024; // 1MB safety limit
 const INITIAL_BUF: usize = 16384; // 16KB initial buffer
 
 pub async fn handle_session(
@@ -21,6 +22,7 @@ pub async fn handle_session(
     peer: SocketAddr,
     engine: Arc<dyn KvEngine>,
     read_timeout: Duration,
+    write_timeout: Duration,
     aof: Option<Arc<AofWriter>>,
     metrics_enabled: bool,
 ) {
@@ -99,7 +101,7 @@ pub async fn handle_session(
                     if let (Some(entry), Some(ref aof_writer), true) =
                         (aof_entry, &aof, response.is_success())
                     {
-                        if let Err(e) = aof_writer.append_raw(&entry) {
+                        if let Err(e) = aof_writer.append_raw(&entry).await {
                             log::warn!("{peer}: aof write failed: {e}");
                         }
                     }
@@ -129,12 +131,25 @@ pub async fn handle_session(
             }
         }
 
+        // Safety: prevent OOM from misbehaving clients that don't consume responses
+        if write_buf.len() > MAX_WRITE_BUF {
+            log::warn!("{peer}: write buffer overflow, closing");
+            break;
+        }
+
         // Flush all accumulated responses at once
         if !write_buf.is_empty() {
-            if writer.write_all(&write_buf).await.is_err() {
-                break;
+            match tokio::time::timeout(write_timeout, writer.write_all(&write_buf)).await {
+                Ok(Ok(())) => write_buf.clear(),
+                Ok(Err(e)) => {
+                    log::warn!("{peer}: write error: {e}");
+                    break;
+                }
+                Err(_) => {
+                    log::warn!("{peer}: write timeout, closing connection");
+                    break;
+                }
             }
-            write_buf.clear();
         }
     }
 

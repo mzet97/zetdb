@@ -2,6 +2,7 @@
 pub enum EngineError {
     StorageError(String),
     NotAnInteger(String),
+    OutOfMemory,
 }
 
 #[derive(Debug)]
@@ -26,6 +27,7 @@ impl std::fmt::Display for EngineError {
         match self {
             Self::StorageError(msg) => write!(f, "storage error: {msg}"),
             Self::NotAnInteger(key) => write!(f, "value is not an integer: {key}"),
+            Self::OutOfMemory => write!(f, "out of memory: max keys limit reached"),
         }
     }
 }

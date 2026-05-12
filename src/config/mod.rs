@@ -29,6 +29,14 @@ pub struct Config {
     #[arg(long, default_value_t = 0, env = "ZETDB_MAX_CONNECTIONS")]
     pub max_connections: usize,
 
+    /// Write timeout in seconds per connection (0 = disabled)
+    #[arg(long, default_value_t = 30, env = "ZETDB_WRITE_TIMEOUT")]
+    pub write_timeout_secs: u64,
+
+    /// Maximum number of keys (0 = unlimited)
+    #[arg(long, default_value_t = 0, env = "ZETDB_MAX_KEYS")]
+    pub max_keys: usize,
+
     #[command(flatten)]
     pub snapshot: SnapshotConfig,
 
@@ -50,6 +58,16 @@ impl Config {
     }
 }
 
+impl Config {
+    pub fn write_timeout(&self) -> Duration {
+        if self.write_timeout_secs == 0 {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(self.write_timeout_secs)
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -58,6 +76,8 @@ impl Default for Config {
             read_timeout_secs: 30,
             sweep_interval_secs: 1,
             max_connections: 0,
+            write_timeout_secs: 30,
+            max_keys: 0,
             snapshot: SnapshotConfig::default(),
             aof: AofConfig::default(),
             metrics_enabled: false,

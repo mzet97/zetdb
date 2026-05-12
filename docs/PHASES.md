@@ -258,13 +258,42 @@ F1-F4: designs futuros
 | **3. Integração** | C1-C3 | TCP ponta a ponta | Servidor funcional via `nc` |
 | **4. Robustez** | B3-B5, D1-D3 | TTL, timeouts, logging | Servidor production-ready mínimo |
 | **5. Validação** | E1-E5 | Testes e benchmarks | Cobertura completa + baseline perf |
-| **6. Evolução** | F1-F4 | Designs futuros | Roadmap documentado |
+| **6. Hardening** | H1-H6 | Robustez operacional | Zero panic, race-free AOF, proteções |
+| **7. Evolução** | F1-F4 | Designs futuros | Roadmap documentado |
+
+---
+
+## Fase 6 — Hardening para Produção
+
+**Objetivo:** Eliminar panics, race conditions e vulnerabilidades operacionais identificadas no review técnico.
+
+**Tarefas:**
+| Ordem | ID | Descrição |
+|---|---|---|
+| 1 | H1 | Remover `unwrap()` de parsing binário (snapshot + AOF) |
+| 2 | H2 | Trocar `std::sync::Mutex` por `tokio::sync::Mutex` no AofWriter |
+| 3 | H3 | AOF rewrite race-free (rename + reopen dentro do lock) |
+| 4 | H4 | Write timeout e proteção contra clientes lentos |
+| 5 | H5 | `max_keys` com eviction amostral aproximado |
+| 6 | H6 | Logar erros de replay/load em vez de descartar silenciosamente |
+
+**Entregáveis:**
+- Zero panic em parsing de dados externos
+- AOF rewrite sem race condition
+- Proteção contra DoS por cliente lento
+- Limite operacional de memória configurável
+
+**Gate de aceitação:**
+- [ ] `cargo clippy -- -D warnings` limpo
+- [ ] `cargo build --release` sem erros
+- [ ] Testes de arquivos corrompidos/truncados passam
+- [ ] Testes de eviction passam
 
 ---
 
 ## Critérios Globais de Sucesso
 
-O projeto é considerado bem-sucedido se ao final da Fase 5:
+O projeto é considerado bem-sucedido se ao final da Fase 6:
 
 1. MVP aceita múltiplos clientes simultaneamente via TCP
 2. `SET`, `GET`, `DEL`, `PING`, `INCR` funcionam corretamente
@@ -272,5 +301,6 @@ O projeto é considerado bem-sucedido se ao final da Fase 5:
 4. Arquitetura separa responsabilidades de modo claro
 5. Código é limpo o suficiente para evolução sem retrabalho
 6. Sistema está preparado para RESP e persistência sem reescrita total
-7. Testes cobrem parser, engine, TTL e fluxo TCP
+7. Testes cobrem parser, engine, TTL, fluxo TCP e robustez
 8. Benchmark de baseline está documentado
+9. Zero panic em código de produção ao processar dados externos

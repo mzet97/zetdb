@@ -13,6 +13,51 @@ const VERSION: u8 = 1;
 const HEADER_SIZE: usize = 4 + 1 + 1 + 4 + 8; // magic + version + flags + count + timestamp
 const CRC_SIZE: usize = 4;
 
+/// Helper: read a u16 little-endian from `data` at `pos`, advance `pos` by 2.
+fn read_u16_le(data: &[u8], pos: &mut usize) -> io::Result<u16> {
+    let end = pos.checked_add(2).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot read overflow")
+    })?;
+    let bytes = data.get(*pos..end).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot truncated u16")
+    })?;
+    let arr: [u8; 2] = bytes.try_into().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot truncated u16")
+    })?;
+    *pos = end;
+    Ok(u16::from_le_bytes(arr))
+}
+
+/// Helper: read a u32 little-endian from `data` at `pos`, advance `pos` by 4.
+fn read_u32_le(data: &[u8], pos: &mut usize) -> io::Result<u32> {
+    let end = pos.checked_add(4).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot read overflow")
+    })?;
+    let bytes = data.get(*pos..end).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot truncated u32")
+    })?;
+    let arr: [u8; 4] = bytes.try_into().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot truncated u32")
+    })?;
+    *pos = end;
+    Ok(u32::from_le_bytes(arr))
+}
+
+/// Helper: read an i64 little-endian from `data` at `pos`, advance `pos` by 8.
+fn read_i64_le(data: &[u8], pos: &mut usize) -> io::Result<i64> {
+    let end = pos.checked_add(8).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot read overflow")
+    })?;
+    let bytes = data.get(*pos..end).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot truncated i64")
+    })?;
+    let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot truncated i64")
+    })?;
+    *pos = end;
+    Ok(i64::from_le_bytes(arr))
+}
+
 /// Dump all non-expired entries to a snapshot file.
 /// Uses atomic write (temp file + rename) for consistency.
 pub fn dump_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error> {
@@ -93,7 +138,8 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
 
     // Verify CRC
     let payload_end = data.len() - CRC_SIZE;
-    let stored_crc = u32::from_le_bytes(data[payload_end..].try_into().unwrap());
+    let mut crc_pos = payload_end;
+    let stored_crc = read_u32_le(&data, &mut crc_pos)?;
     let computed_crc = crc32fast::hash(&data[..payload_end]);
     if stored_crc != computed_crc {
         return Err(io::Error::new(
@@ -103,7 +149,8 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
     }
 
     // Parse header
-    let count = u32::from_le_bytes(data[6..10].try_into().unwrap()) as usize;
+    let mut hdr_pos = 6;
+    let count = read_u32_le(&data, &mut hdr_pos)? as usize;
 
     // Parse entries
     let mut pos = HEADER_SIZE;
@@ -112,12 +159,17 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
     for _ in 0..count {
         // Key
         if pos + 2 > payload_end {
+            log::warn!(
+                "snapshot load: truncated at key length (pos={pos}, payload_end={payload_end})"
+            );
             break;
         }
-        let key_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
+        let key_len = read_u16_le(&data, &mut pos)? as usize;
 
         if pos + key_len > payload_end {
+            log::warn!(
+                "snapshot load: truncated at key data (pos={pos}, key_len={key_len}, payload_end={payload_end})"
+            );
             break;
         }
         let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
@@ -125,12 +177,17 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
 
         // Value
         if pos + 4 > payload_end {
+            log::warn!(
+                "snapshot load: truncated at value length (pos={pos}, payload_end={payload_end})"
+            );
             break;
         }
-        let val_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
+        let val_len = read_u32_le(&data, &mut pos)? as usize;
 
         if pos + val_len > payload_end {
+            log::warn!(
+                "snapshot load: truncated at value data (pos={pos}, val_len={val_len}, payload_end={payload_end})"
+            );
             break;
         }
         let value = Bytes::copy_from_slice(&data[pos..pos + val_len]);
@@ -138,10 +195,12 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
 
         // TTL
         if pos + 8 > payload_end {
+            log::warn!(
+                "snapshot load: truncated at ttl (pos={pos}, payload_end={payload_end})"
+            );
             break;
         }
-        let ttl_ms = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
-        pos += 8;
+        let ttl_ms = read_i64_le(&data, &mut pos)?;
 
         let expires_at = if ttl_ms > 0 {
             Some(Instant::now() + Duration::from_millis(ttl_ms as u64))
@@ -149,16 +208,18 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
             None
         };
 
-        engine
-            .set(
-                key,
-                ValueEntry {
-                    data: value,
-                    expires_at,
-                },
-            )
-            .ok();
-        loaded += 1;
+        if let Err(e) = engine.set(
+            key.clone(),
+            ValueEntry {
+                data: value,
+                expires_at,
+                created_at: Instant::now(),
+            },
+        ) {
+            log::warn!("snapshot load: failed to set key '{key}': {e}");
+        } else {
+            loaded += 1;
+        }
     }
 
     Ok(loaded)
@@ -352,5 +413,43 @@ mod tests {
             engine2.get("bin").unwrap().unwrap().data.as_ref(),
             binary.as_slice()
         );
+    }
+
+    #[test]
+    fn truncated_snapshot_does_not_panic() {
+        let path = temp_path("truncated");
+        ensure_dir(&path);
+        let _ = fs::remove_file(&path);
+
+        let engine = DashMapEngine::new();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
+
+        dump_snapshot(&engine, &path).unwrap();
+
+        // Truncate in the middle of the second entry, but keep CRC valid
+        // so the parser reaches the entry loop and fails there.
+        let mut data = fs::read(&path).unwrap();
+        // Header is HEADER_SIZE bytes.
+        // First entry: key_len(2) + "k1"(2) + val_len(4) + "v1"(2) + ttl(8) = 18 bytes.
+        // Cut after first entry + 2 bytes of second entry's key_len (incomplete).
+        let truncate_at = HEADER_SIZE + 2 + 2 + 4 + 2 + 8 + 2;
+        data.truncate(truncate_at);
+
+        // Recalculate CRC on truncated payload and append it
+        let crc = crc32fast::hash(&data);
+        data.extend_from_slice(&crc.to_le_bytes());
+        fs::write(&path, &data).unwrap();
+
+        let engine2 = DashMapEngine::new();
+        // Should not panic — gracefully loads partial data
+        let loaded = load_snapshot(&engine2, &path).unwrap();
+        assert_eq!(loaded, 1);
+        assert_eq!(engine2.get("k1").unwrap().unwrap().data, Bytes::from("v1"));
+        assert!(engine2.get("k2").unwrap().is_none());
     }
 }

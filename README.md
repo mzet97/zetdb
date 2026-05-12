@@ -117,6 +117,20 @@ src/
 | `--aof-fsync` / `ZETDB_AOF_FSYNC` | `everysec` | Política: `always`, `everysec`, `no` |
 | `--aof-rewrite-threshold` / `ZETDB_AOF_REWRITE_THRESHOLD` | `67108864` (64MB) | Threshold para rewrite |
 | `--metrics` / `ZETDB_METRICS` | `true` | Ativa contadores de métricas |
+| `--write-timeout-secs` / `ZETDB_WRITE_TIMEOUT` | `30` | Timeout de escrita por conexão |
+| `--max-keys` / `ZETDB_MAX_KEYS` | `0` | Máximo de chaves (0 = ilimitado) |
+
+## Limitações Conhecidas (MVP)
+
+| Limitação | Detalhe |
+|---|---|
+| `MSET` não-atômico | Cada par é escrito individualmente; falha parcial pode deixar metade das chaves definidas. |
+| `KEYS` bloqueante | Retorna todas as chaves em um `Vec`; com milhões de chaves, aloca memória proporcional. |
+| `maxmemory` é `max_keys` | O limite de memória é por contagem de chaves, não por bytes exatos. |
+| Eviction aproximado | Política `allkeys-lru` amostra até 5 chaves e remove a mais antiga; não é LRU exato. |
+| Sem TLS/SSL | Conexões são plaintext TCP. |
+| Sem ACL/Auth | Não há autenticação de clientes. |
+| Sem cluster | Instância única apenas. |
 
 ## Quick Start
 
