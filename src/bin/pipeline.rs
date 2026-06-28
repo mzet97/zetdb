@@ -259,6 +259,7 @@ async fn main() {
         bind_addr: "127.0.0.1".into(),
         port,
         read_timeout_secs: 300,
+        write_timeout_secs: 0, // Disable write timeout for benchmark (zero overhead)
         ..Default::default()
     };
     let engine = Arc::new(DashMapEngine::new());

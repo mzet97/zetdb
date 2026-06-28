@@ -113,60 +113,60 @@ fn encode_ttl(buf: &mut Vec<u8>, ttl_ms: i64) {
 
 /// Helper: read a u16 little-endian from `data` at `pos`, advance `pos` by 2.
 fn read_u16_le(data: &[u8], pos: &mut usize) -> io::Result<u16> {
-    let end = pos.checked_add(2).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof read overflow")
-    })?;
-    let bytes = data.get(*pos..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated u16")
-    })?;
-    let arr: [u8; 2] = bytes.try_into().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated u16")
-    })?;
+    let end = pos
+        .checked_add(2)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof read overflow"))?;
+    let bytes = data
+        .get(*pos..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof truncated u16"))?;
+    let arr: [u8; 2] = bytes
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "aof truncated u16"))?;
     *pos = end;
     Ok(u16::from_le_bytes(arr))
 }
 
 /// Helper: read a u32 little-endian from `data` at `pos`, advance `pos` by 4.
 fn read_u32_le(data: &[u8], pos: &mut usize) -> io::Result<u32> {
-    let end = pos.checked_add(4).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof read overflow")
-    })?;
-    let bytes = data.get(*pos..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated u32")
-    })?;
-    let arr: [u8; 4] = bytes.try_into().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated u32")
-    })?;
+    let end = pos
+        .checked_add(4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof read overflow"))?;
+    let bytes = data
+        .get(*pos..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof truncated u32"))?;
+    let arr: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "aof truncated u32"))?;
     *pos = end;
     Ok(u32::from_le_bytes(arr))
 }
 
 /// Helper: read a u64 little-endian from `data` at `pos`, advance `pos` by 8.
 fn read_u64_le(data: &[u8], pos: &mut usize) -> io::Result<u64> {
-    let end = pos.checked_add(8).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof read overflow")
-    })?;
-    let bytes = data.get(*pos..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated u64")
-    })?;
-    let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated u64")
-    })?;
+    let end = pos
+        .checked_add(8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof read overflow"))?;
+    let bytes = data
+        .get(*pos..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof truncated u64"))?;
+    let arr: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "aof truncated u64"))?;
     *pos = end;
     Ok(u64::from_le_bytes(arr))
 }
 
 /// Helper: read an i64 little-endian from `data` at `pos`, advance `pos` by 8.
 fn read_i64_le(data: &[u8], pos: &mut usize) -> io::Result<i64> {
-    let end = pos.checked_add(8).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof read overflow")
-    })?;
-    let bytes = data.get(*pos..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated i64")
-    })?;
-    let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "aof truncated i64")
-    })?;
+    let end = pos
+        .checked_add(8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof read overflow"))?;
+    let bytes = data
+        .get(*pos..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "aof truncated i64"))?;
+    let arr: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "aof truncated i64"))?;
     *pos = end;
     Ok(i64::from_le_bytes(arr))
 }
@@ -196,7 +196,13 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at key length (pos={pos})");
                     break;
                 }
-                let key_len = read_u16_le(&data, &mut pos)? as usize;
+                let key_len = match read_u16_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read EXPIRE key length: {e}");
+                        break;
+                    }
+                };
                 if pos + key_len > data.len() {
                     log::warn!("aof replay: truncated at key data (pos={pos}, key_len={key_len})");
                     break;
@@ -208,9 +214,17 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at value length (pos={pos})");
                     break;
                 }
-                let val_len = read_u32_le(&data, &mut pos)? as usize;
+                let val_len = match read_u32_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read value length: {e}");
+                        break;
+                    }
+                };
                 if pos + val_len > data.len() {
-                    log::warn!("aof replay: truncated at value data (pos={pos}, val_len={val_len})");
+                    log::warn!(
+                        "aof replay: truncated at value data (pos={pos}, val_len={val_len})"
+                    );
                     break;
                 }
                 let value = Bytes::copy_from_slice(&data[pos..pos + val_len]);
@@ -220,7 +234,13 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at ttl (pos={pos})");
                     break;
                 }
-                let ttl_ms = read_i64_le(&data, &mut pos)?;
+                let ttl_ms = match read_i64_le(&data, &mut pos) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read ttl: {e}");
+                        break;
+                    }
+                };
 
                 let expires_at = if ttl_ms > 0 {
                     Some(Instant::now() + Duration::from_millis(ttl_ms as u64))
@@ -244,9 +264,17 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at DEL key length (pos={pos})");
                     break;
                 }
-                let key_len = read_u16_le(&data, &mut pos)? as usize;
+                let key_len = match read_u16_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read DEL key length: {e}");
+                        break;
+                    }
+                };
                 if pos + key_len > data.len() {
-                    log::warn!("aof replay: truncated at DEL key data (pos={pos}, key_len={key_len})");
+                    log::warn!(
+                        "aof replay: truncated at DEL key data (pos={pos}, key_len={key_len})"
+                    );
                     break;
                 }
                 let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
@@ -261,9 +289,17 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at INCR key length (pos={pos})");
                     break;
                 }
-                let key_len = read_u16_le(&data, &mut pos)? as usize;
+                let key_len = match read_u16_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read DEL key length: {e}");
+                        break;
+                    }
+                };
                 if pos + key_len > data.len() {
-                    log::warn!("aof replay: truncated at INCR key data (pos={pos}, key_len={key_len})");
+                    log::warn!(
+                        "aof replay: truncated at INCR key data (pos={pos}, key_len={key_len})"
+                    );
                     break;
                 }
                 let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
@@ -278,9 +314,17 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at EXPIRE key length (pos={pos})");
                     break;
                 }
-                let key_len = read_u16_le(&data, &mut pos)? as usize;
+                let key_len = match read_u16_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read DEL key length: {e}");
+                        break;
+                    }
+                };
                 if pos + key_len > data.len() {
-                    log::warn!("aof replay: truncated at EXPIRE key data (pos={pos}, key_len={key_len})");
+                    log::warn!(
+                        "aof replay: truncated at EXPIRE key data (pos={pos}, key_len={key_len})"
+                    );
                     break;
                 }
                 let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
@@ -290,7 +334,13 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at EXPIRE seconds (pos={pos})");
                     break;
                 }
-                let seconds = read_u64_le(&data, &mut pos)?;
+                let seconds = match read_u64_le(&data, &mut pos) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read EXPIRE seconds: {e}");
+                        break;
+                    }
+                };
 
                 engine.expire(&key, seconds);
             }
@@ -302,16 +352,30 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                     log::warn!("aof replay: truncated at MSET count (pos={pos})");
                     break;
                 }
-                let count = read_u16_le(&data, &mut pos)? as usize;
+                let count = match read_u16_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read MSET count: {e}");
+                        break;
+                    }
+                };
 
                 for _ in 0..count {
                     if pos + 2 > data.len() {
                         log::warn!("aof replay: truncated at MSET key length (pos={pos})");
                         break;
                     }
-                    let key_len = read_u16_le(&data, &mut pos)? as usize;
+                let key_len = match read_u16_le(&data, &mut pos) {
+                    Ok(v) => v as usize,
+                    Err(e) => {
+                        log::warn!("aof replay: failed to read MSET key length: {e}");
+                        break;
+                    }
+                };
                     if pos + key_len > data.len() {
-                        log::warn!("aof replay: truncated at MSET key data (pos={pos}, key_len={key_len})");
+                        log::warn!(
+                            "aof replay: truncated at MSET key data (pos={pos}, key_len={key_len})"
+                        );
                         break;
                     }
                     let key = String::from_utf8_lossy(&data[pos..pos + key_len]).into_owned();
@@ -321,7 +385,13 @@ pub fn replay_aof(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error
                         log::warn!("aof replay: truncated at MSET value length (pos={pos})");
                         break;
                     }
-                    let val_len = read_u32_le(&data, &mut pos)? as usize;
+                    let val_len = match read_u32_le(&data, &mut pos) {
+                        Ok(v) => v as usize,
+                        Err(e) => {
+                            log::warn!("aof replay: failed to read MSET value length: {e}");
+                            break;
+                        }
+                    };
                     if pos + val_len > data.len() {
                         log::warn!("aof replay: truncated at MSET value data (pos={pos}, val_len={val_len})");
                         break;
@@ -553,8 +623,10 @@ mod tests {
     #[test]
     fn rewrite_compacts_aof() {
         let path = temp_path("compact");
+        let tmp_path = format!("{path}.tmp");
         ensure_dir(&path);
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&tmp_path);
 
         let engine = DashMapEngine::new();
         engine
@@ -566,8 +638,9 @@ mod tests {
 
         rewrite_aof(&engine, &path).unwrap();
 
+        // rewrite_aof writes to {path}.tmp, not {path}
         let engine2 = DashMapEngine::new();
-        let count = replay_aof(&engine2, &path).unwrap();
+        let count = replay_aof(&engine2, &tmp_path).unwrap();
         assert_eq!(count, 2);
         assert_eq!(engine2.get("k1").unwrap().unwrap().data, Bytes::from("v1"));
         assert_eq!(engine2.get("k2").unwrap().unwrap().data, Bytes::from("v2"));

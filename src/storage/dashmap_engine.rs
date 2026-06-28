@@ -639,9 +639,72 @@ mod tests {
         let engine = DashMapEngine::new(); // max_keys = 0
         for i in 0..100 {
             engine
-                .set(format!("k{i}"), ValueEntry::new(Bytes::from(format!("v{i}"))))
+                .set(
+                    format!("k{i}"),
+                    ValueEntry::new(Bytes::from(format!("v{i}"))),
+                )
                 .unwrap();
         }
         assert_eq!(engine.len(), 100);
+    }
+
+    #[test]
+    fn max_keys_evicts_with_mset() {
+        let engine = DashMapEngine::with_max_keys(2);
+        engine
+            .set("a".into(), ValueEntry::new(Bytes::from("1")))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        engine
+            .set("b".into(), ValueEntry::new(Bytes::from("2")))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        // MSET adding new keys should trigger eviction
+        engine
+            .set("c".into(), ValueEntry::new(Bytes::from("3")))
+            .unwrap();
+        engine
+            .set("d".into(), ValueEntry::new(Bytes::from("4")))
+            .unwrap();
+
+        // Should have exactly 2 keys (max_keys limit)
+        assert_eq!(engine.len(), 2);
+        // Oldest keys (a, b) should be evicted
+        assert!(engine.get("a").unwrap().is_none());
+        assert!(engine.get("b").unwrap().is_none());
+        // Newest keys should exist
+        assert_eq!(engine.get("c").unwrap().unwrap().data, Bytes::from("3"));
+        assert_eq!(engine.get("d").unwrap().unwrap().data, Bytes::from("4"));
+    }
+
+    #[test]
+    fn max_keys_mset_overwrite_does_not_evict() {
+        let engine = DashMapEngine::with_max_keys(2);
+        engine
+            .set("a".into(), ValueEntry::new(Bytes::from("1")))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        engine
+            .set("b".into(), ValueEntry::new(Bytes::from("2")))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        // MSET overwriting existing keys should not trigger eviction
+        engine
+            .set("a".into(), ValueEntry::new(Bytes::from("1_updated")))
+            .unwrap();
+        engine
+            .set("b".into(), ValueEntry::new(Bytes::from("2_updated")))
+            .unwrap();
+
+        // Both keys should still exist with updated values
+        assert_eq!(engine.len(), 2);
+        assert_eq!(
+            engine.get("a").unwrap().unwrap().data,
+            Bytes::from("1_updated")
+        );
+        assert_eq!(
+            engine.get("b").unwrap().unwrap().data,
+            Bytes::from("2_updated")
+        );
     }
 }
