@@ -31,15 +31,15 @@ pub fn parse_bytes(input: &[u8]) -> Result<Command, ParseError> {
     // Split into verb and rest at first whitespace
     let (verb, rest) = split_first_word(input);
 
-    // Case-insensitive command match — no allocation
-    if eq_ignore_ascii_case(verb, b"PING") {
-        return Ok(Command::Ping);
-    }
+    // Case-insensitive command match — reordered by frequency (GET/SET first)
     if eq_ignore_ascii_case(verb, b"GET") {
         return parse_get_bytes(rest);
     }
     if eq_ignore_ascii_case(verb, b"SET") {
         return parse_set_bytes(rest);
+    }
+    if eq_ignore_ascii_case(verb, b"PING") {
+        return Ok(Command::Ping);
     }
     if eq_ignore_ascii_case(verb, b"DEL") {
         return parse_del_bytes(rest);
@@ -689,6 +689,8 @@ fn parse_resp_frame(buf: &[u8]) -> Result<FrameResult, ParseError> {
 
 /// Parse a RESP integer line like `*3\r\n` or `$5\r\n`.
 /// Returns `(value, bytes_consumed)` or `None` if incomplete.
+/// Fast path: manual decimal parsing to avoid from_utf8 + parse overhead.
+#[inline(always)]
 fn read_resp_line_int(buf: &[u8], prefix: u8) -> Result<Option<(i64, usize)>, ParseError> {
     if buf.is_empty() {
         return Ok(None);
@@ -709,12 +711,35 @@ fn read_resp_line_int(buf: &[u8], prefix: u8) -> Result<Option<(i64, usize)>, Pa
             } else {
                 pos
             };
-            let num_str = &buf[1..num_end];
-            let s = std::str::from_utf8(num_str)
-                .map_err(|_| ParseError::SyntaxError("RESP: invalid integer".into()))?;
-            let n: i64 = s
-                .parse()
-                .map_err(|_| ParseError::SyntaxError("RESP: expected integer".into()))?;
+            let num_slice = &buf[1..num_end];
+            if num_slice.is_empty() {
+                return Err(ParseError::SyntaxError("RESP: empty integer".into()));
+            }
+            
+            // Manual decimal parsing — much faster than from_utf8 + parse::<i64>
+            let mut n: i64 = 0;
+            let mut negative = false;
+            let mut start = 0;
+            
+            if num_slice[0] == b'-' {
+                negative = true;
+                start = 1;
+                if num_slice.len() == 1 {
+                    return Err(ParseError::SyntaxError("RESP: invalid negative integer".into()));
+                }
+            }
+            
+            for &b in &num_slice[start..] {
+                if !b.is_ascii_digit() {
+                    return Err(ParseError::SyntaxError("RESP: expected integer".into()));
+                }
+                n = n * 10 + i64::from(b - b'0');
+            }
+            
+            if negative {
+                n = -n;
+            }
+            
             Ok(Some((n, pos + 1)))
         }
     }

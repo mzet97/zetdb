@@ -30,7 +30,7 @@ fn write_response(response: Response, buf: &mut BytesMut, is_resp: bool) {
 
 pub async fn handle_session(
     stream: TcpStream,
-    peer: SocketAddr,
+    _peer: SocketAddr,
     engine: Arc<dyn KvEngine>,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -47,7 +47,6 @@ pub async fn handle_session(
     if metrics_enabled {
         metrics::metrics().connection_opened();
     }
-    log::info!("client connected: {peer}");
 
     // Fast path: no timeout overhead when write_timeout is 0
     let use_write_timeout = write_timeout.as_secs() > 0;
@@ -57,31 +56,24 @@ pub async fn handle_session(
         match tokio::time::timeout(read_timeout, reader.read_buf(&mut read_buf)).await {
             Ok(Ok(0)) => break,
             Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                log::warn!("{peer}: read error: {e}");
-                break;
-            }
-            Err(_) => {
-                log::info!("{peer}: read timeout, closing connection");
-                break;
-            }
+            Ok(Err(_)) => break,
+            Err(_) => break,
         };
 
         // Safety: prevent OOM from misbehaving clients
         if read_buf.len() > MAX_READ_BUF {
-            log::warn!("{peer}: read buffer overflow, closing");
             break;
         }
 
-        // Pre-allocate write buffer: estimate ~32 bytes per response for inline protocol
-        // This avoids repeated allocations during the hot loop
-        let estimated_lines = memchr::memchr_iter(b'\n', &read_buf).count();
-        if estimated_lines > 0 {
-            write_buf.reserve(estimated_lines * 32);
+        // Pre-allocate write buffer: simple heuristic based on read buffer size
+        // Avoids scanning entire buffer for newlines (expensive in hot path)
+        let spare = write_buf.capacity().saturating_sub(write_buf.len());
+        let needed_hint = (read_buf.len() / 2).min(64 * 1024);
+        if spare < needed_hint {
+            write_buf.reserve(needed_hint - spare);
         }
 
         // Detect protocol once per batch: RESP starts with '*', inline doesn't
-        // This is done once per read batch, not per command
         let is_resp = read_buf.first() == Some(&b'*');
 
         // Process ALL complete frames in the buffer (inline or RESP)
@@ -125,8 +117,8 @@ pub async fn handle_session(
                         if let (Some(entry), Some(ref aof_writer), true) =
                             (aof_entry, &aof, response.is_success())
                         {
-                            if let Err(e) = aof_writer.append_raw(&entry).await {
-                                log::warn!("{peer}: aof write failed: {e}");
+                            if aof_writer.append_raw(&entry).await.is_err() {
+                                // Silently ignore AOF errors in production
                             }
                         }
                         
@@ -136,15 +128,13 @@ pub async fn handle_session(
                         read_buf.advance(consumed);
                     }
                     Ok(FrameResult::Incomplete) => break,
-                    Err(ParseError::UnknownCommand(cmd)) => {
-                        log::warn!("{peer}: unknown command '{cmd}'");
+                    Err(ParseError::SyntaxError(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::UnknownCommand(cmd)).write_to_resp(&mut write_buf);
+                        Response::Error(ResponseError::SyntaxError("syntax error".to_string())).write_to_resp(&mut write_buf);
                     }
-                    Err(ParseError::SyntaxError(msg)) => {
-                        log::warn!("{peer}: syntax error: {msg}");
+                    Err(ParseError::UnknownCommand(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::SyntaxError(msg)).write_to_resp(&mut write_buf);
+                        Response::Error(ResponseError::UnknownCommand("unknown command".to_string())).write_to_resp(&mut write_buf);
                     }
                     Err(ParseError::EmptyCommand) => break,
                 }
@@ -189,8 +179,8 @@ pub async fn handle_session(
                         if let (Some(entry), Some(ref aof_writer), true) =
                             (aof_entry, &aof, response.is_success())
                         {
-                            if let Err(e) = aof_writer.append_raw(&entry).await {
-                                log::warn!("{peer}: aof write failed: {e}");
+                            if aof_writer.append_raw(&entry).await.is_err() {
+                                // Silently ignore AOF errors in production
                             }
                         }
                         
@@ -200,15 +190,13 @@ pub async fn handle_session(
                         read_buf.advance(consumed);
                     }
                     Ok(FrameResult::Incomplete) => break,
-                    Err(ParseError::UnknownCommand(cmd)) => {
-                        log::warn!("{peer}: unknown command '{cmd}'");
+                    Err(ParseError::SyntaxError(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::UnknownCommand(cmd)).write_to(&mut write_buf);
+                        Response::Error(ResponseError::SyntaxError("syntax error".to_string())).write_to(&mut write_buf);
                     }
-                    Err(ParseError::SyntaxError(msg)) => {
-                        log::warn!("{peer}: syntax error: {msg}");
+                    Err(ParseError::UnknownCommand(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::SyntaxError(msg)).write_to(&mut write_buf);
+                        Response::Error(ResponseError::UnknownCommand("unknown command".to_string())).write_to(&mut write_buf);
                     }
                     Err(ParseError::EmptyCommand) => break,
                 }
@@ -217,7 +205,6 @@ pub async fn handle_session(
 
         // Safety: prevent OOM from misbehaving clients that don't consume responses
         if write_buf.len() > MAX_WRITE_BUF {
-            log::warn!("{peer}: write buffer overflow, closing");
             break;
         }
 
@@ -227,14 +214,8 @@ pub async fn handle_session(
                 // Slow path: with timeout protection
                 match tokio::time::timeout(write_timeout, writer.write_all(&write_buf)).await {
                     Ok(Ok(())) => write_buf.clear(),
-                    Ok(Err(e)) => {
-                        log::warn!("{peer}: write error: {e}");
-                        break;
-                    }
-                    Err(_) => {
-                        log::warn!("{peer}: write timeout, closing connection");
-                        break;
-                    }
+                    Ok(Err(_)) => break,
+                    Err(_) => break,
                 }
             } else {
                 // Fast path: zero timeout overhead
@@ -246,7 +227,6 @@ pub async fn handle_session(
         }
     }
 
-    log::info!("client disconnected: {peer}");
     if metrics_enabled {
         metrics::metrics().connection_closed();
     }

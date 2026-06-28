@@ -4,8 +4,8 @@ use crate::protocol::response::{Response, ResponseError};
 use crate::storage::engine::KvEngine;
 
 pub fn dispatch(engine: &dyn KvEngine, cmd: Command) -> Response {
+    // Reordenado por frequência de uso (GET e SET são os mais comuns)
     match cmd {
-        Command::Ping => Response::Pong,
         Command::Get { key } => match engine.get(&key) {
             Ok(Some(entry)) => Response::Value(Some(entry.data)),
             Ok(None) => Response::Value(None),
@@ -21,6 +21,7 @@ pub fn dispatch(engine: &dyn KvEngine, cmd: Command) -> Response {
                 Err(e) => Response::Error(ResponseError::InternalError(e.to_string())),
             }
         }
+        Command::Ping => Response::Pong,
         Command::Del { key } => match engine.del(&key) {
             Ok(existed) => Response::Integer(if existed { 1 } else { 0 }),
             Err(e) => Response::Error(ResponseError::InternalError(e.to_string())),
