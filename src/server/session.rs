@@ -92,7 +92,8 @@ pub async fn handle_session(
                     Ok(FrameResult::Complete { consumed, command }) => {
                         read_buf.advance(consumed);
                         
-                        let aof_entry = if command.is_write() {
+                        // Only compute AOF entry if AOF is actually enabled
+                        let aof_entry = if aof.is_some() && command.is_write() {
                             command.to_aof_entry()
                         } else {
                             None
@@ -155,7 +156,8 @@ pub async fn handle_session(
                     Ok(FrameResult::Complete { consumed, command }) => {
                         read_buf.advance(consumed);
                         
-                        let aof_entry = if command.is_write() {
+                        // Only compute AOF entry if AOF is actually enabled
+                        let aof_entry = if aof.is_some() && command.is_write() {
                             command.to_aof_entry()
                         } else {
                             None
