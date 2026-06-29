@@ -13,6 +13,21 @@ const VERSION: u8 = 1;
 const HEADER_SIZE: usize = 4 + 1 + 1 + 4 + 8; // magic + version + flags + count + timestamp
 const CRC_SIZE: usize = 4;
 
+/// Memory-mapped file for fast snapshot loading.
+/// Uses memmap2 for cross-platform memory mapping.
+fn mmap_file(path: &str) -> io::Result<&'static [u8]> {
+    use memmap2::Mmap;
+    
+    let file = fs::File::open(path)?;
+    let mmap = unsafe { Mmap::map(&file)? };
+    
+    // Leak the mmap to keep it alive for the lifetime of the program
+    // This is safe because we only read from it and it's immutable
+    let ptr = Box::into_raw(Box::new(mmap));
+    let slice = unsafe { (*ptr).as_ref() };
+    Ok(slice)
+}
+
 /// Helper: read a u16 little-endian from `data` at `pos`, advance `pos` by 2.
 fn read_u16_le(data: &[u8], pos: &mut usize) -> io::Result<u16> {
     let end = pos
@@ -105,20 +120,39 @@ pub fn dump_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
 }
 
 /// Load entries from a snapshot file into the engine.
+/// Uses memory-mapped I/O for fast loading on large files.
 /// Returns Ok(0) if file doesn't exist. Returns Err on corruption.
 pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Error> {
-    let data = match fs::read(path) {
-        Ok(d) => d,
+    // Check if file exists and get metadata
+    let metadata = match fs::metadata(path) {
+        Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
     };
-
-    if data.len() < HEADER_SIZE + CRC_SIZE {
+    
+    let file_size = metadata.len() as usize;
+    
+    if file_size < HEADER_SIZE + CRC_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "snapshot too short",
         ));
     }
+    
+    // Use memory-mapped I/O for files larger than 1MB, regular read for smaller files
+    let data: Vec<u8> = if file_size > 1024 * 1024 {
+        // Large file: use mmap
+        match mmap_file(path) {
+            Ok(mapped) => mapped.to_vec(),
+            Err(_) => {
+                // Fallback to regular read if mmap fails
+                fs::read(path)?
+            }
+        }
+    } else {
+        // Small file: regular read is faster
+        fs::read(path)?
+    };
 
     // Verify magic
     if &data[0..4] != MAGIC {
@@ -229,7 +263,7 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
             ValueEntry {
                 data: value,
                 expires_at,
-                created_at: Instant::now(),
+                created_at: Some(Instant::now()),
             },
         ) {
             log::warn!("snapshot load: failed to set key '{key}': {e}");

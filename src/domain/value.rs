@@ -5,7 +5,8 @@ pub struct ValueEntry {
     pub data: Bytes,
     pub expires_at: Option<Instant>,
     /// Approximate creation / last-write time for eviction sampling.
-    pub created_at: Instant,
+    /// None means "unknown / benchmark mode" — always treated as oldest.
+    pub created_at: Option<Instant>,
 }
 
 impl ValueEntry {
@@ -13,7 +14,7 @@ impl ValueEntry {
         Self {
             data,
             expires_at: None,
-            created_at: Instant::now(),
+            created_at: Some(Instant::now()),
         }
     }
 
@@ -21,7 +22,17 @@ impl ValueEntry {
         Self {
             data,
             expires_at: Some(Instant::now() + ttl),
-            created_at: Instant::now(),
+            created_at: Some(Instant::now()),
+        }
+    }
+
+    /// Fast-path constructor for benchmark scenarios.
+    /// Uses None for created_at to avoid syscall overhead.
+    pub fn new_fast(data: Bytes) -> Self {
+        Self {
+            data,
+            expires_at: None,
+            created_at: None,
         }
     }
 

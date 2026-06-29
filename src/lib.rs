@@ -11,6 +11,7 @@ pub use application::dispatcher::dispatch;
 pub use config::{AofConfig, Config, FsyncPolicy, SnapshotConfig};
 pub use domain::command::Command;
 pub use domain::errors::{DomainError, EngineError};
+pub use domain::parsed_command::ParsedCommand;
 pub use domain::value::ValueEntry;
 pub use protocol::response::{Response, ResponseError};
 pub use server::tcp::{run_server, run_server_with_shutdown};

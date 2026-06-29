@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 use crate::config::Config;
 use crate::server::session::handle_session;
 use crate::storage::aof::AofWriter;
-use crate::storage::engine::KvEngine;
+use crate::storage::dashmap_engine::DashMapEngine;
 
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -17,7 +17,7 @@ const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[allow(clippy::too_many_arguments)]
 pub async fn run_server_with_listener(
     listener: TcpListener,
-    engine: Arc<dyn KvEngine>,
+    engine: Arc<DashMapEngine>,
     aof: Option<Arc<AofWriter>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     read_timeout: Duration,
@@ -76,6 +76,14 @@ pub async fn run_server_with_listener(
         }
         tokio::time::sleep(DRAIN_POLL_INTERVAL).await;
     }
+    
+    // Flush any pending AOF batch writes before shutting down
+    if let Some(ref aof_writer) = aof {
+        if let Err(e) = aof_writer.flush().await {
+            log::warn!("failed to flush AOF on shutdown: {e}");
+        }
+    }
+    
     log::info!("all connections drained, server stopped");
     Ok(())
 }
@@ -84,7 +92,7 @@ pub async fn run_server_with_listener(
 /// Returns when the shutdown signal is received and all connections have drained.
 pub async fn run_server_with_shutdown(
     config: Config,
-    engine: Arc<dyn KvEngine>,
+    engine: Arc<DashMapEngine>,
     aof: Option<Arc<AofWriter>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -105,7 +113,7 @@ pub async fn run_server_with_shutdown(
 /// Convenience wrapper for tests — runs until aborted or connection error.
 pub async fn run_server(
     config: Config,
-    engine: Arc<dyn KvEngine>,
+    engine: Arc<DashMapEngine>,
     aof: Option<Arc<AofWriter>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -116,6 +124,7 @@ pub async fn run_server(
 mod tests {
     use super::*;
     use crate::storage::dashmap_engine::DashMapEngine;
+    use crate::storage::engine::KvEngine;
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -685,6 +694,9 @@ mod tests {
             tx.send(true).ok();
             handle.await.ok();
         }
+        
+        // Give AOF time to flush batch
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // --- Phase 2: replay AOF into a fresh engine ---
         let engine2 = DashMapEngine::new();

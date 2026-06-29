@@ -769,7 +769,7 @@ fn read_resp_bulk(buf: &[u8]) -> Result<Option<(&[u8], usize)>, ParseError> {
 
 // --- Byte helpers ---
 
-fn trim(buf: &[u8]) -> &[u8] {
+pub fn trim(buf: &[u8]) -> &[u8] {
     let mut start = 0;
     let mut end = buf.len();
     while start < end && is_whitespace(buf[start]) {
@@ -781,7 +781,7 @@ fn trim(buf: &[u8]) -> &[u8] {
     &buf[start..end]
 }
 
-fn split_first_word(buf: &[u8]) -> (&[u8], &[u8]) {
+pub fn split_first_word(buf: &[u8]) -> (&[u8], &[u8]) {
     match buf.iter().position(|&b| is_whitespace(b)) {
         Some(i) => (&buf[..i], &buf[i..]),
         None => (buf, &buf[buf.len()..]),
@@ -792,7 +792,7 @@ fn is_whitespace(b: u8) -> bool {
     b == b' ' || b == b'\t' || b == b'\r' || b == b'\n'
 }
 
-fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
+pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
 }
 

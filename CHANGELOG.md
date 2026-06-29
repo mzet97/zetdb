@@ -26,6 +26,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Results: SET +12.6% (1.74M → 1.96M ops/s), GET +2.6% (3.08M → 3.16M ops/s)
   - Note: Performance still ~75% below MVP baseline (12.16M GET / 7.63M SET) due to additional features (RESP protocol, AOF, metrics, more commands)
 
+- **Zero-allocation parser (parser_borrowed.rs)**:
+  - Created `ParsedCommand<'a>` with borrowed keys (zero-allocation hot path)
+  - Inline parser avoids String allocation for keys and values
+  - Manual decimal parsing for RESP integers (faster than from_utf8 + parse)
+  - Commands reordered by frequency (GET/SET first)
+  - AOF lazy evaluation: only computes to_aof_entry() when AOF is enabled
+  - Fixed consumed calculation to correctly advance buffer per command (supports pipelining)
+  - Fixed MGET/MSET parsing to handle multiple keys/pairs correctly
+  - All 168 tests passing with zero-allocation parser
+
+- **WSL Benchmark Results** (8 cores, 23GB RAM):
+  - SET peak: **4.58M ops/s** (pipe=500, clients=16) - 60% of MVP baseline (7.63M)
+  - GET peak: **17.4M ops/s** (pipe=500, clients=32) - **143% of MVP baseline (12.16M)**
+  - MIXED peak: **5.24M total ops/s** (16w/16r pipe=200)
+  - Note: GET now exceeds MVP baseline by 43% with optimized benchmark client
+
+- **Redis Comparison** (RESP protocol, Ubuntu 24.04, 4 cores):
+  - Redis 7.0.15: SET 1.05M ops/s, GET 1.85M ops/s
+  - ZetDB: SET 1.09M ops/s, GET 2.26M ops/s
+  - ZetDB is ~4% faster than Redis for SET and ~22% faster for GET on Linux native
+  - Note: Both use RESP protocol in this comparison; ZetDB inline protocol is significantly faster
+
+- **Redis Comparison WSL** (RESP protocol, 8 cores, 23GB RAM):
+  - Redis 7.0.15: SET 288k ops/s (pipe=200, clients=32), GET 978k ops/s (pipe=100, clients=4)
+  - ZetDB: SET 2.71M ops/s (pipe=500, clients=32), GET 3.75M ops/s (pipe=500, clients=32)
+  - ZetDB is ~9.4x faster than Redis for SET and ~3.8x faster for GET on WSL with RESP protocol
+  - Note: Redis WSL performance is lower than Linux native likely due to WSL networking overhead
+
+- **Benchmark Client Fix**:
+  - Fixed `redis_compare` not draining full RESP bulk-string responses (`$len\r\n<data>\r\n`)
+  - Previous client read only the first line, causing connection backpressure and server livelock during GET pre-population
+  - Added `read_resp_response()` helper to consume complete RESP frames
+
 ### Verified by Code Inspection
 
 - H4: Write timeout protection — implemented in `session.rs` with `tokio::time::timeout` on `writer.write_all` and `MAX_WRITE_BUF` overflow check (1MB limit). On localhost, kernel TCP buffers are large enough that write timeout may not fire during integration tests, but the protection is active in production scenarios with real network latency.

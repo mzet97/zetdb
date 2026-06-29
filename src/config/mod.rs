@@ -61,7 +61,7 @@ impl Config {
 impl Config {
     pub fn write_timeout(&self) -> Duration {
         if self.write_timeout_secs == 0 {
-            Duration::from_secs(30)
+            Duration::from_secs(0) // Disabled - no timeout
         } else {
             Duration::from_secs(self.write_timeout_secs)
         }

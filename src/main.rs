@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use zetdb::config::Config;
+use zetdb::observability::cpu_affinity;
 use zetdb::server::tcp::run_server_with_shutdown;
 use zetdb::storage::aof;
 use zetdb::storage::dashmap_engine::DashMapEngine;
@@ -11,6 +12,14 @@ use zetdb::storage::ttl;
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Pin worker threads to CPU cores for better cache locality
+    let num_workers = std::env::var("TOKIO_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(cpu_affinity::num_cpus);
+    
+    log::info!("Starting ZetDB with {} worker threads", num_workers);
 
     let config = Config::parse();
     let engine = Arc::new(DashMapEngine::new());

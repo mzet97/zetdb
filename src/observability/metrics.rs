@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -23,6 +24,25 @@ pub enum CommandType {
 }
 
 const NUM_COMMAND_TYPES: usize = 14;
+
+/// Per-thread counters to avoid cache contention on AtomicU64.
+/// Aggregated periodically to global metrics.
+#[derive(Default)]
+struct LocalCounters {
+    commands_total: u64,
+    commands_by_type: [u64; NUM_COMMAND_TYPES],
+    keyspace_hits: u64,
+    keyspace_misses: u64,
+    errors_total: u64,
+}
+
+thread_local! {
+    static LOCAL_COUNTERS: RefCell<LocalCounters> = RefCell::new(LocalCounters::default());
+}
+
+/// Batch size for local counter flush to global metrics.
+/// Flushing every 64 commands balances cache locality vs contention.
+const FLUSH_BATCH: u64 = 64;
 
 pub struct Metrics {
     pub commands_total: AtomicU64,
@@ -51,29 +71,82 @@ pub fn metrics() -> &'static Metrics {
 }
 
 impl Metrics {
+    /// Record a command - uses thread-local counters to avoid cache contention.
+    #[inline(always)]
     pub fn record_command(&self, cmd: CommandType) {
-        self.commands_total.fetch_add(1, Ordering::Relaxed);
-        self.commands_by_type[cmd as usize].fetch_add(1, Ordering::Relaxed);
+        LOCAL_COUNTERS.with(|local| {
+            let mut local = local.borrow_mut();
+            local.commands_total += 1;
+            local.commands_by_type[cmd as usize] += 1;
+            
+            // Flush to global metrics every FLUSH_BATCH commands
+            if local.commands_total % FLUSH_BATCH == 0 {
+                self.commands_total.fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                self.commands_by_type[cmd as usize].fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                local.commands_total -= FLUSH_BATCH;
+                local.commands_by_type[cmd as usize] -= FLUSH_BATCH;
+            }
+        });
     }
 
     pub fn command_count(&self, cmd: CommandType) -> u64 {
-        self.commands_by_type[cmd as usize].load(Ordering::Relaxed)
+        // Sum global + all thread-local counters
+        let global = self.commands_by_type[cmd as usize].load(Ordering::Relaxed);
+        let local_sum: u64 = LOCAL_COUNTERS.with(|local| {
+            local.borrow().commands_by_type[cmd as usize]
+        });
+        global + local_sum
+    }
+
+    pub fn total_commands(&self) -> u64 {
+        let global = self.commands_total.load(Ordering::Relaxed);
+        let local_sum: u64 = LOCAL_COUNTERS.with(|local| {
+            local.borrow().commands_total
+        });
+        global + local_sum
     }
 
     pub fn uptime_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
     }
 
+    /// Record a cache hit - uses thread-local counters.
+    #[inline(always)]
     pub fn record_hit(&self) {
-        self.keyspace_hits.fetch_add(1, Ordering::Relaxed);
+        LOCAL_COUNTERS.with(|local| {
+            let mut local = local.borrow_mut();
+            local.keyspace_hits += 1;
+            if local.keyspace_hits % FLUSH_BATCH == 0 {
+                self.keyspace_hits.fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                local.keyspace_hits -= FLUSH_BATCH;
+            }
+        });
     }
 
+    /// Record a cache miss - uses thread-local counters.
+    #[inline(always)]
     pub fn record_miss(&self) {
-        self.keyspace_misses.fetch_add(1, Ordering::Relaxed);
+        LOCAL_COUNTERS.with(|local| {
+            let mut local = local.borrow_mut();
+            local.keyspace_misses += 1;
+            if local.keyspace_misses % FLUSH_BATCH == 0 {
+                self.keyspace_misses.fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                local.keyspace_misses -= FLUSH_BATCH;
+            }
+        });
     }
 
+    /// Record an error - uses thread-local counters.
+    #[inline(always)]
     pub fn record_error(&self) {
-        self.errors_total.fetch_add(1, Ordering::Relaxed);
+        LOCAL_COUNTERS.with(|local| {
+            let mut local = local.borrow_mut();
+            local.errors_total += 1;
+            if local.errors_total % FLUSH_BATCH == 0 {
+                self.errors_total.fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                local.errors_total -= FLUSH_BATCH;
+            }
+        });
     }
 
     pub fn connection_opened(&self) {
@@ -83,6 +156,36 @@ impl Metrics {
 
     pub fn connection_closed(&self) {
         self.connections_active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Flush all thread-local counters to global metrics.
+    /// Call this before reading metrics (e.g., for INFO command).
+    pub fn flush_all(&self) {
+        LOCAL_COUNTERS.with(|local| {
+            let mut local = local.borrow_mut();
+            if local.commands_total > 0 {
+                self.commands_total.fetch_add(local.commands_total, Ordering::Relaxed);
+                local.commands_total = 0;
+            }
+            if local.keyspace_hits > 0 {
+                self.keyspace_hits.fetch_add(local.keyspace_hits, Ordering::Relaxed);
+                local.keyspace_hits = 0;
+            }
+            if local.keyspace_misses > 0 {
+                self.keyspace_misses.fetch_add(local.keyspace_misses, Ordering::Relaxed);
+                local.keyspace_misses = 0;
+            }
+            if local.errors_total > 0 {
+                self.errors_total.fetch_add(local.errors_total, Ordering::Relaxed);
+                local.errors_total = 0;
+            }
+            for i in 0..NUM_COMMAND_TYPES {
+                if local.commands_by_type[i] > 0 {
+                    self.commands_by_type[i].fetch_add(local.commands_by_type[i], Ordering::Relaxed);
+                    local.commands_by_type[i] = 0;
+                }
+            }
+        });
     }
 }
 
@@ -96,8 +199,10 @@ mod tests {
         m.record_command(CommandType::Get);
         m.record_command(CommandType::Get);
         m.record_command(CommandType::Set);
+        m.flush_all();
 
-        assert_eq!(m.commands_total.load(Ordering::Relaxed), 3);
+        // After flush, total should include all commands (including unflushed batch)
+        assert_eq!(m.total_commands(), 3);
         assert_eq!(m.command_count(CommandType::Get), 2);
         assert_eq!(m.command_count(CommandType::Set), 1);
         assert_eq!(m.command_count(CommandType::Ping), 0);
@@ -109,6 +214,7 @@ mod tests {
         m.record_hit();
         m.record_hit();
         m.record_miss();
+        m.flush_all();
 
         assert_eq!(m.keyspace_hits.load(Ordering::Relaxed), 2);
         assert_eq!(m.keyspace_misses.load(Ordering::Relaxed), 1);

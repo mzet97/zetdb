@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,34 @@ fn resp_get(key: &[u8]) -> Vec<u8> {
     resp_frame(&[b"GET", key])
 }
 
+async fn read_resp_response<R>(
+    reader: &mut R,
+    line: &mut String,
+    scratch: &mut Vec<u8>,
+) -> std::io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
+    line.clear();
+    reader.read_line(line).await?;
+
+    let Some(len_text) = line.strip_prefix('$') else {
+        return Ok(());
+    };
+
+    let len = len_text
+        .trim_end_matches(['\r', '\n'])
+        .parse::<isize>()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+
+    if len >= 0 {
+        scratch.resize(len as usize + 2, 0);
+        reader.read_exact(scratch).await?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark core
 // ---------------------------------------------------------------------------
@@ -87,6 +115,8 @@ async fn resp_pipeline_bench(
             let mut batch = Vec::with_capacity(256 * pipeline_size);
             let mut key_buf = [0u8; 32];
             let mut val_buf = [0u8; 32];
+            let mut line = String::new();
+            let mut scratch = Vec::new();
 
             loop {
                 if !running.load(Ordering::Relaxed) {
@@ -113,10 +143,10 @@ async fn resp_pipeline_bench(
                 writer.flush().await.unwrap();
 
                 // Read responses
-                let mut line = String::new();
                 for _ in 0..pipeline_size {
-                    line.clear();
-                    reader.read_line(&mut line).await.unwrap();
+                    read_resp_response(&mut reader, &mut line, &mut scratch)
+                        .await
+                        .unwrap();
                 }
 
                 local_count += pipeline_size as u64;
@@ -158,6 +188,8 @@ async fn prepopulate(addr: &str, n_keys: usize) {
     let mut batch = Vec::with_capacity(64 * 500);
     let mut remaining = n_keys;
     let mut idx: usize = 0;
+    let mut line = String::new();
+    let mut scratch = Vec::new();
 
     while remaining > 0 {
         let chunk = remaining.min(500);
@@ -171,10 +203,10 @@ async fn prepopulate(addr: &str, n_keys: usize) {
         writer.write_all(&batch).await.unwrap();
         writer.flush().await.unwrap();
 
-        let mut line = String::new();
         for _ in 0..chunk {
-            line.clear();
-            reader.read_line(&mut line).await.unwrap();
+            read_resp_response(&mut reader, &mut line, &mut scratch)
+                .await
+                .unwrap();
         }
         remaining -= chunk;
     }

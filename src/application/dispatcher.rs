@@ -1,7 +1,192 @@
 use crate::domain::command::Command;
 use crate::observability::metrics::{self, CommandType};
 use crate::protocol::response::{Response, ResponseError};
+use crate::storage::dashmap_engine::DashMapEngine;
 use crate::storage::engine::KvEngine;
+use bytes::BytesMut;
+
+/// Dispatch command and write response directly to buffer (zero-allocation hot path).
+/// This avoids creating Response enum and boxing errors.
+#[inline(always)]
+pub fn dispatch_to_buffer(engine: &DashMapEngine, cmd: Command, buf: &mut BytesMut, is_resp: bool) {
+    match cmd {
+        Command::Get { key } => {
+            match engine.get(&key) {
+                Ok(Some(entry)) => {
+                    if is_resp {
+                        // RESP bulk string: $<len>\r\n<data>\r\n
+                        buf.extend_from_slice(b"$");
+                        let mut itoa_buf = itoa::Buffer::new();
+                        buf.extend_from_slice(itoa_buf.format(entry.data.len()).as_bytes());
+                        buf.extend_from_slice(b"\r\n");
+                        buf.extend_from_slice(&entry.data);
+                        buf.extend_from_slice(b"\r\n");
+                    } else {
+                        // Inline simple string: +<data>\r\n
+                        buf.extend_from_slice(b"+");
+                        buf.extend_from_slice(&entry.data);
+                        buf.extend_from_slice(b"\r\n");
+                    }
+                }
+                Ok(None) => buf.extend_from_slice(b"$-1\r\n"),
+                Err(_) => buf.extend_from_slice(b"-ERR internal\r\n"),
+            }
+        }
+        Command::Set { key, value, ttl } => {
+            let entry = match ttl {
+                Some(dur) => crate::domain::value::ValueEntry::with_ttl(value, dur),
+                None => crate::domain::value::ValueEntry::new(value),
+            };
+            match engine.set(key, entry) {
+                Ok(()) => buf.extend_from_slice(b"+OK\r\n"),
+                Err(_) => buf.extend_from_slice(b"-ERR internal\r\n"),
+            }
+        }
+        Command::Ping => buf.extend_from_slice(b"+PONG\r\n"),
+        Command::Del { key } => match engine.del(&key) {
+            Ok(existed) => {
+                buf.extend_from_slice(b":");
+                let mut itoa_buf = itoa::Buffer::new();
+                buf.extend_from_slice(itoa_buf.format(if existed { 1 } else { 0 }).as_bytes());
+                buf.extend_from_slice(b"\r\n");
+            }
+            Err(_) => buf.extend_from_slice(b"-ERR internal\r\n"),
+        },
+        Command::Incr { key } => match engine.incr(&key) {
+            Ok(n) => {
+                buf.extend_from_slice(b":");
+                let mut itoa_buf = itoa::Buffer::new();
+                buf.extend_from_slice(itoa_buf.format(n).as_bytes());
+                buf.extend_from_slice(b"\r\n");
+            }
+            Err(_) => buf.extend_from_slice(b"-ERR type\r\n"),
+        },
+        Command::Info => {
+            let m = metrics::metrics();
+            let uptime = m.uptime_secs();
+            let info = format!(
+                "# Server\r\nzetdb_version:0.1.0\r\nuptime_in_seconds:{uptime}\r\n\r\n\
+                 # Clients\r\nconnected_clients:{}\r\ntotal_connections:{}\r\n\r\n\
+                 # Stats\r\ntotal_commands:{}\r\n\
+                 cmd_ping:{}\r\ncmd_get:{}\r\ncmd_set:{}\r\n\
+                 cmd_del:{}\r\ncmd_incr:{}\r\ncmd_info:{}\r\ncmd_dbsize:{}\r\n\
+                 keyspace_hits:{}\r\nkeyspace_misses:{}\r\nerrors_total:{}\r\n\r\n\
+                 # Keyspace\r\ndb0:keys={}\r\n",
+                m.connections_active
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                m.connections_total
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                m.commands_total.load(std::sync::atomic::Ordering::Relaxed),
+                m.command_count(CommandType::Ping),
+                m.command_count(CommandType::Get),
+                m.command_count(CommandType::Set),
+                m.command_count(CommandType::Del),
+                m.command_count(CommandType::Incr),
+                m.command_count(CommandType::Info),
+                m.command_count(CommandType::DbSize),
+                m.keyspace_hits.load(std::sync::atomic::Ordering::Relaxed),
+                m.keyspace_misses.load(std::sync::atomic::Ordering::Relaxed),
+                m.errors_total.load(std::sync::atomic::Ordering::Relaxed),
+                engine.len(),
+            );
+            if is_resp {
+                buf.extend_from_slice(b"$");
+                let mut itoa_buf = itoa::Buffer::new();
+                buf.extend_from_slice(itoa_buf.format(info.len()).as_bytes());
+                buf.extend_from_slice(b"\r\n");
+                buf.extend_from_slice(info.as_bytes());
+                buf.extend_from_slice(b"\r\n");
+            } else {
+                buf.extend_from_slice(b"+");
+                buf.extend_from_slice(info.as_bytes());
+                buf.extend_from_slice(b"\r\n");
+            }
+        }
+        Command::DbSize => {
+            buf.extend_from_slice(b":");
+            let mut itoa_buf = itoa::Buffer::new();
+            buf.extend_from_slice(itoa_buf.format(engine.len() as i64).as_bytes());
+            buf.extend_from_slice(b"\r\n");
+        }
+        Command::Exists { key } => {
+            buf.extend_from_slice(b":");
+            let mut itoa_buf = itoa::Buffer::new();
+            buf.extend_from_slice(itoa_buf.format(if engine.exists(&key) { 1 } else { 0 }).as_bytes());
+            buf.extend_from_slice(b"\r\n");
+        }
+        Command::Ttl { key } => {
+            buf.extend_from_slice(b":");
+            let mut itoa_buf = itoa::Buffer::new();
+            buf.extend_from_slice(itoa_buf.format(engine.ttl_secs(&key)).as_bytes());
+            buf.extend_from_slice(b"\r\n");
+        }
+        Command::Expire { key, seconds } => {
+            buf.extend_from_slice(b":");
+            let mut itoa_buf = itoa::Buffer::new();
+            buf.extend_from_slice(itoa_buf.format(if engine.expire(&key, seconds) { 1 } else { 0 }).as_bytes());
+            buf.extend_from_slice(b"\r\n");
+        }
+        Command::FlushDb => {
+            engine.clear();
+            buf.extend_from_slice(b"+OK\r\n");
+        }
+        Command::Keys => {
+            let keys: Vec<Option<bytes::Bytes>> = engine
+                .keys()
+                .into_iter()
+                .map(|k| Some(bytes::Bytes::from(k)))
+                .collect();
+            let mut itoa_buf = itoa::Buffer::new();
+            buf.extend_from_slice(b"*");
+            buf.extend_from_slice(itoa_buf.format(keys.len()).as_bytes());
+            buf.extend_from_slice(b"\r\n");
+            for item in keys {
+                match item {
+                    Some(data) => {
+                        buf.extend_from_slice(b"$");
+                        buf.extend_from_slice(itoa_buf.format(data.len()).as_bytes());
+                        buf.extend_from_slice(b"\r\n");
+                        buf.extend_from_slice(&data);
+                        buf.extend_from_slice(b"\r\n");
+                    }
+                    None => buf.extend_from_slice(b"$-1\r\n"),
+                }
+            }
+        }
+        Command::Mget { keys } => {
+            let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
+            let results = engine.mget(&key_refs);
+            let mut itoa_buf = itoa::Buffer::new();
+            buf.extend_from_slice(b"*");
+            buf.extend_from_slice(itoa_buf.format(results.len()).as_bytes());
+            buf.extend_from_slice(b"\r\n");
+            for opt in results {
+                match opt {
+                    Some(entry) => {
+                        buf.extend_from_slice(b"$");
+                        buf.extend_from_slice(itoa_buf.format(entry.data.len()).as_bytes());
+                        buf.extend_from_slice(b"\r\n");
+                        buf.extend_from_slice(&entry.data);
+                        buf.extend_from_slice(b"\r\n");
+                    }
+                    None => buf.extend_from_slice(b"$-1\r\n"),
+                }
+            }
+        }
+        Command::Mset { pairs } => {
+            for (key, value) in pairs {
+                let entry = crate::domain::value::ValueEntry::new(value);
+                if let Err(e) = engine.set(key, entry) {
+                    buf.extend_from_slice(b"-ERR internal: ");
+                    buf.extend_from_slice(e.to_string().as_bytes());
+                    buf.extend_from_slice(b"\r\n");
+                    return;
+                }
+            }
+            buf.extend_from_slice(b"+OK\r\n");
+        }
+    }
+}
 
 pub fn dispatch(engine: &dyn KvEngine, cmd: Command) -> Response {
     // Reordenado por frequência de uso (GET e SET são os mais comuns)
