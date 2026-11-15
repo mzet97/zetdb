@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened AOF replay and snapshot load against truncated files
 - Improved error logging for AOF replay and snapshot load failures
 
+### Fixed
+
+- Clippy errors on Rust 1.96 (`manual_range_contains` in TTL asserts, `needless_borrows_for_generic_args` in AOF test)
+- `cargo fmt` compliance across `src/` and `src/bin/`
+- Docker image now binds `0.0.0.0` so published ports accept traffic (default `127.0.0.1` was unreachable from the host)
+
+### Changed
+
+- Dependencies: tokio 1.54.1, clap 4.6.7, serde 1.0.229, serde_json 1.0.154, bytes 1.12.1, memchr 2.8.3, crc32fast 1.5.5, libc 0.2.191, log 0.4.35, itoa 1.0.19, memmap2 0.9.12 (all caret-compatible, no `Cargo.toml` changes)
+- Dockerfile builder `rust:1.96-bookworm` → `rust:1.98-bookworm`
+- GitHub Actions: checkout v7, upload-artifact v7, attest-build-provenance v4, login-action v4, build-push-action v7, codeql-action v4, trivy-action pinned to 0.35.0 (was `@master`); new CI `audit` job running `cargo audit`
+
+### Security
+
+- `cargo audit` clean: 66 crates, 0 advisories; audit now enforced on every push/PR via CI
+
 ### Performance
 
 - **Session handler optimizations** (WSL benchmark):
