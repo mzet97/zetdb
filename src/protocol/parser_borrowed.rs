@@ -1,7 +1,7 @@
 // Otimizado para ParsedCommand - zero alocação no hot path
-use std::time::Duration;
 use crate::domain::parsed_command::ParsedCommand;
-use crate::protocol::parser::{ParseError, trim, split_first_word, eq_ignore_ascii_case};
+use crate::protocol::parser::{eq_ignore_ascii_case, split_first_word, trim, ParseError};
+use std::time::Duration;
 
 /// Find the end of the first command (first \r\n after the command, including any trailing whitespace).
 #[allow(dead_code)]
@@ -20,24 +20,34 @@ fn find_command_end(buf: &[u8]) -> usize {
 /// Parse inline command into borrowed ParsedCommand (zero allocation).
 /// Returns FrameResult with borrowed command or error.
 /// Only parses the first complete command (up to first \r\n), leaving the rest for subsequent calls.
-pub fn parse_inline_borrowed<'a>(original_input: &'a [u8]) -> Result<FrameResultBorrowed<'a>, ParseError> {
+pub fn parse_inline_borrowed<'a>(
+    original_input: &'a [u8],
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     // Use memchr for fast \r\n scanning (SIMD-accelerated)
     let pos = match memchr::memchr2(b'\r', b'\n', original_input) {
-        Some(p) if p + 1 < original_input.len() && original_input[p] == b'\r' && original_input[p + 1] == b'\n' => p,
+        Some(p)
+            if p + 1 < original_input.len()
+                && original_input[p] == b'\r'
+                && original_input[p + 1] == b'\n' =>
+        {
+            p
+        }
         Some(p) if original_input[p] == b'\n' => p.saturating_sub(1), // Handle bare \n
         _ => {
             // No complete command yet - need more data
             return Ok(FrameResultBorrowed::Incomplete);
         }
     };
-    
+
     // pos now points to \r, command ends at pos + 2 (including \r\n)
     let command_end = pos + 2;
     let input = trim(&original_input[..pos]);
-    
+
     if input.is_empty() {
         // Empty line (just \r\n), skip it
-        return Ok(FrameResultBorrowed::Skip { consumed: command_end });
+        return Ok(FrameResultBorrowed::Skip {
+            consumed: command_end,
+        });
     }
 
     let (verb, rest) = split_first_word(input);
@@ -50,9 +60,9 @@ pub fn parse_inline_borrowed<'a>(original_input: &'a [u8]) -> Result<FrameResult
         return parse_set_borrowed(original_input, rest, command_end);
     }
     if eq_ignore_ascii_case(verb, b"PING") {
-        return Ok(FrameResultBorrowed::Complete { 
-            consumed: command_end, 
-            command: ParsedCommand::Ping 
+        return Ok(FrameResultBorrowed::Complete {
+            consumed: command_end,
+            command: ParsedCommand::Ping,
         });
     }
     if eq_ignore_ascii_case(verb, b"DEL") {
@@ -62,22 +72,26 @@ pub fn parse_inline_borrowed<'a>(original_input: &'a [u8]) -> Result<FrameResult
         return parse_incr_borrowed(original_input, rest, command_end);
     }
     if eq_ignore_ascii_case(verb, b"INFO") {
-        return Ok(FrameResultBorrowed::Complete { 
-            consumed: command_end, 
-            command: ParsedCommand::Info 
+        return Ok(FrameResultBorrowed::Complete {
+            consumed: command_end,
+            command: ParsedCommand::Info,
         });
     }
     if eq_ignore_ascii_case(verb, b"DBSIZE") {
-        return Ok(FrameResultBorrowed::Complete { 
-            consumed: command_end, 
-            command: ParsedCommand::DbSize 
+        return Ok(FrameResultBorrowed::Complete {
+            consumed: command_end,
+            command: ParsedCommand::DbSize,
         });
     }
     if eq_ignore_ascii_case(verb, b"EXISTS") {
-        return parse_single_key_borrowed(original_input, rest, command_end, |key| ParsedCommand::Exists { key });
+        return parse_single_key_borrowed(original_input, rest, command_end, |key| {
+            ParsedCommand::Exists { key }
+        });
     }
     if eq_ignore_ascii_case(verb, b"TTL") {
-        return parse_single_key_borrowed(original_input, rest, command_end, |key| ParsedCommand::Ttl { key });
+        return parse_single_key_borrowed(original_input, rest, command_end, |key| {
+            ParsedCommand::Ttl { key }
+        });
     }
     if eq_ignore_ascii_case(verb, b"EXPIRE") {
         return parse_expire_borrowed(original_input, rest, command_end);
@@ -87,9 +101,9 @@ pub fn parse_inline_borrowed<'a>(original_input: &'a [u8]) -> Result<FrameResult
         if !rest.is_empty() {
             return Err(ParseError::SyntaxError("FLUSHDB takes no arguments".into()));
         }
-        return Ok(FrameResultBorrowed::Complete { 
-            consumed: command_end, 
-            command: ParsedCommand::FlushDb 
+        return Ok(FrameResultBorrowed::Complete {
+            consumed: command_end,
+            command: ParsedCommand::FlushDb,
         });
     }
     if eq_ignore_ascii_case(verb, b"KEYS") {
@@ -97,9 +111,9 @@ pub fn parse_inline_borrowed<'a>(original_input: &'a [u8]) -> Result<FrameResult
         if !rest.is_empty() {
             return Err(ParseError::SyntaxError("KEYS takes no arguments".into()));
         }
-        return Ok(FrameResultBorrowed::Complete { 
-            consumed: command_end, 
-            command: ParsedCommand::Keys 
+        return Ok(FrameResultBorrowed::Complete {
+            consumed: command_end,
+            command: ParsedCommand::Keys,
         });
     }
     if eq_ignore_ascii_case(verb, b"MGET") {
@@ -116,12 +130,21 @@ pub fn parse_inline_borrowed<'a>(original_input: &'a [u8]) -> Result<FrameResult
 
 #[derive(Debug)]
 pub enum FrameResultBorrowed<'a> {
-    Complete { consumed: usize, command: ParsedCommand<'a> },
+    Complete {
+        consumed: usize,
+        command: ParsedCommand<'a>,
+    },
     Incomplete,
-    Skip { consumed: usize },
+    Skip {
+        consumed: usize,
+    },
 }
 
-fn parse_get_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_get_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest_trimmed = trim(rest);
     if rest_trimmed.is_empty() {
         return Err(ParseError::SyntaxError(
@@ -141,7 +164,11 @@ fn parse_get_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end
     })
 }
 
-fn parse_set_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_set_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest_trimmed = trim(rest);
     if rest_trimmed.is_empty() {
         return Err(ParseError::SyntaxError(
@@ -179,15 +206,15 @@ fn parse_set_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end
     };
     Ok(FrameResultBorrowed::Complete {
         consumed: command_end,
-        command: ParsedCommand::Set {
-            key,
-            value,
-            ttl,
-        },
+        command: ParsedCommand::Set { key, value, ttl },
     })
 }
 
-fn parse_del_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_del_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest = trim(rest);
     if rest.is_empty() {
         return Err(ParseError::SyntaxError(
@@ -207,7 +234,11 @@ fn parse_del_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end
     })
 }
 
-fn parse_incr_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_incr_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest = trim(rest);
     if rest.is_empty() {
         return Err(ParseError::SyntaxError(
@@ -252,7 +283,11 @@ fn parse_single_key_borrowed<'a>(
     })
 }
 
-fn parse_expire_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_expire_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest = trim(rest);
     if rest.is_empty() {
         return Err(ParseError::SyntaxError(
@@ -266,15 +301,20 @@ fn parse_expire_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_
             "EXPIRE requires exactly 2 arguments: EXPIRE <key> <seconds>".into(),
         ));
     }
-    let seconds = parse_u64_ascii(seconds_part)
-        .ok_or_else(|| ParseError::SyntaxError("EXPIRE: seconds must be a positive integer".into()))?;
+    let seconds = parse_u64_ascii(seconds_part).ok_or_else(|| {
+        ParseError::SyntaxError("EXPIRE: seconds must be a positive integer".into())
+    })?;
     Ok(FrameResultBorrowed::Complete {
         consumed: command_end,
         command: ParsedCommand::Expire { key, seconds },
     })
 }
 
-fn parse_mget_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_mget_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest = trim(rest);
     if rest.is_empty() {
         return Err(ParseError::SyntaxError(
@@ -302,7 +342,11 @@ fn parse_mget_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_en
     })
 }
 
-fn parse_mset_borrowed<'a>(_original_input: &'a [u8], rest: &'a [u8], command_end: usize) -> Result<FrameResultBorrowed<'a>, ParseError> {
+fn parse_mset_borrowed<'a>(
+    _original_input: &'a [u8],
+    rest: &'a [u8],
+    command_end: usize,
+) -> Result<FrameResultBorrowed<'a>, ParseError> {
     let rest = trim(rest);
     if rest.is_empty() {
         return Err(ParseError::SyntaxError(

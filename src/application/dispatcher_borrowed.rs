@@ -6,7 +6,12 @@ use bytes::BytesMut;
 /// Dispatch borrowed command and write response directly to buffer (zero-allocation hot path).
 /// This avoids creating Command enum and boxing errors.
 #[inline(always)]
-pub fn dispatch_borrowed_to_buffer(engine: &DashMapEngine, cmd: ParsedCommand<'_>, buf: &mut BytesMut, is_resp: bool) {
+pub fn dispatch_borrowed_to_buffer(
+    engine: &DashMapEngine,
+    cmd: ParsedCommand<'_>,
+    buf: &mut BytesMut,
+    is_resp: bool,
+) {
     match cmd {
         ParsedCommand::Get { key } => {
             match engine.get(std::str::from_utf8(key).unwrap_or("")) {
@@ -33,7 +38,10 @@ pub fn dispatch_borrowed_to_buffer(engine: &DashMapEngine, cmd: ParsedCommand<'_
         ParsedCommand::Set { key, value, ttl } => {
             let key_str = std::str::from_utf8(key).unwrap_or("");
             let entry = match ttl {
-                Some(dur) => crate::domain::value::ValueEntry::with_ttl(bytes::Bytes::copy_from_slice(value), dur),
+                Some(dur) => crate::domain::value::ValueEntry::with_ttl(
+                    bytes::Bytes::copy_from_slice(value),
+                    dur,
+                ),
                 None => crate::domain::value::ValueEntry::new(bytes::Bytes::copy_from_slice(value)),
             };
             match engine.set(key_str.into(), entry) {
@@ -108,21 +116,24 @@ pub fn dispatch_borrowed_to_buffer(engine: &DashMapEngine, cmd: ParsedCommand<'_
             buf.extend_from_slice(itoa_buf.format(engine.len()).as_bytes());
             buf.extend_from_slice(b"\r\n");
         }
-        ParsedCommand::Exists { key } => match engine.exists(std::str::from_utf8(key).unwrap_or("")) {
-            true => {
-                buf.extend_from_slice(b":");
-                let mut itoa_buf = itoa::Buffer::new();
-                buf.extend_from_slice(itoa_buf.format(1).as_bytes());
-                buf.extend_from_slice(b"\r\n");
+        ParsedCommand::Exists { key } => {
+            match engine.exists(std::str::from_utf8(key).unwrap_or("")) {
+                true => {
+                    buf.extend_from_slice(b":");
+                    let mut itoa_buf = itoa::Buffer::new();
+                    buf.extend_from_slice(itoa_buf.format(1).as_bytes());
+                    buf.extend_from_slice(b"\r\n");
+                }
+                false => {
+                    buf.extend_from_slice(b":");
+                    let mut itoa_buf = itoa::Buffer::new();
+                    buf.extend_from_slice(itoa_buf.format(0).as_bytes());
+                    buf.extend_from_slice(b"\r\n");
+                }
             }
-            false => {
-                buf.extend_from_slice(b":");
-                let mut itoa_buf = itoa::Buffer::new();
-                buf.extend_from_slice(itoa_buf.format(0).as_bytes());
-                buf.extend_from_slice(b"\r\n");
-            }
-        },
-        ParsedCommand::Ttl { key } => match engine.ttl_secs(std::str::from_utf8(key).unwrap_or("")) {
+        }
+        ParsedCommand::Ttl { key } => match engine.ttl_secs(std::str::from_utf8(key).unwrap_or(""))
+        {
             -2 => buf.extend_from_slice(b":-2\r\n"),
             -1 => buf.extend_from_slice(b":-1\r\n"),
             ttl => {
@@ -211,7 +222,8 @@ pub fn dispatch_borrowed_to_buffer(engine: &DashMapEngine, cmd: ParsedCommand<'_
         ParsedCommand::Mset { pairs } => {
             for (key, value) in pairs {
                 let key_str = std::str::from_utf8(key).unwrap_or("");
-                let entry = crate::domain::value::ValueEntry::new(bytes::Bytes::copy_from_slice(value));
+                let entry =
+                    crate::domain::value::ValueEntry::new(bytes::Bytes::copy_from_slice(value));
                 let _ = engine.set(key_str.into(), entry);
             }
             buf.extend_from_slice(b"+OK\r\n");

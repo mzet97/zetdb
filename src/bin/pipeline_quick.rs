@@ -72,7 +72,7 @@ async fn pipeline_bench(
             let mut stream = TcpStream::connect(&addr).await.unwrap();
             let mut local_count = 0u64;
             let mut key_counter = client_id as u64 * 1_000_000;
-            
+
             // Pre-allocate read buffer (enough for all responses)
             let mut read_buf = vec![0u8; pipeline_size * 32];
             let mut read_pos = 0usize;
@@ -85,10 +85,11 @@ async fn pipeline_bench(
                 // Build and send multiple batches before reading responses
                 let mut batch = Vec::with_capacity(pipeline_size * 32 * 4);
                 for _ in 0..4 {
-                    let single_batch = build_batch(&op, pipeline_size, &mut key_counter, client_id as u64);
+                    let single_batch =
+                        build_batch(&op, pipeline_size, &mut key_counter, client_id as u64);
                     batch.extend_from_slice(&single_batch);
                 }
-                
+
                 // Write entire batch at once
                 if stream.write_all(&batch).await.is_err() {
                     return;

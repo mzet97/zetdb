@@ -76,14 +76,14 @@ pub async fn run_server_with_listener(
         }
         tokio::time::sleep(DRAIN_POLL_INTERVAL).await;
     }
-    
+
     // Flush any pending AOF batch writes before shutting down
     if let Some(ref aof_writer) = aof {
         if let Err(e) = aof_writer.flush().await {
             log::warn!("failed to flush AOF on shutdown: {e}");
         }
     }
-    
+
     log::info!("all connections drained, server stopped");
     Ok(())
 }
@@ -694,7 +694,7 @@ mod tests {
             tx.send(true).ok();
             handle.await.ok();
         }
-        
+
         // Give AOF time to flush batch
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
