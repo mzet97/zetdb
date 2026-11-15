@@ -107,7 +107,10 @@ impl DashMapEngine {
     /// Accepts &str key to avoid String allocation
     #[inline(always)]
     pub fn set_fast_str(&self, key: &str, value: Bytes) {
-        self.map.insert(key.to_string().into_boxed_str(), ValueEntry::new_fast(value));
+        self.map.insert(
+            key.to_string().into_boxed_str(),
+            ValueEntry::new_fast(value),
+        );
     }
 }
 
@@ -346,7 +349,10 @@ mod tests {
         engine
             .set("bad".into(), ValueEntry::new(Bytes::from("not_a_number")))
             .unwrap();
-        assert!(matches!(engine.incr("bad"), Err(EngineError::NotAnInteger(_))));
+        assert!(matches!(
+            engine.incr("bad"),
+            Err(EngineError::NotAnInteger(_))
+        ));
     }
 
     #[test]
@@ -404,7 +410,7 @@ mod tests {
         entry.expires_at = Some(Instant::now() + Duration::from_secs(300));
         engine.set("key".into(), entry).unwrap();
         let ttl = engine.ttl_secs("key");
-        assert!(ttl >= 299 && ttl <= 300);
+        assert!((299..=300).contains(&ttl));
     }
 
     #[test]
@@ -415,7 +421,7 @@ mod tests {
             .unwrap();
         assert!(engine.expire("key", 60));
         let ttl = engine.ttl_secs("key");
-        assert!(ttl >= 59 && ttl <= 60);
+        assert!((59..=60).contains(&ttl));
     }
 
     #[test]
@@ -494,15 +500,23 @@ mod tests {
     #[test]
     fn max_keys_evicts_oldest() {
         let engine = DashMapEngine::with_max_keys(3);
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
         std::thread::sleep(Duration::from_millis(10));
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
         std::thread::sleep(Duration::from_millis(10));
-        engine.set("k3".into(), ValueEntry::new(Bytes::from("v3"))).unwrap();
+        engine
+            .set("k3".into(), ValueEntry::new(Bytes::from("v3")))
+            .unwrap();
         // At capacity
         assert_eq!(engine.len(), 3);
         // Adding a 4th should evict the oldest (k1)
-        engine.set("k4".into(), ValueEntry::new(Bytes::from("v4"))).unwrap();
+        engine
+            .set("k4".into(), ValueEntry::new(Bytes::from("v4")))
+            .unwrap();
         assert_eq!(engine.len(), 3);
         assert!(engine.get("k1").unwrap().is_none());
         assert!(engine.get("k2").unwrap().is_some());
@@ -524,32 +538,52 @@ mod tests {
     #[test]
     fn max_keys_allows_overwrite() {
         let engine = DashMapEngine::with_max_keys(2);
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
         // Overwriting k1 should not trigger eviction
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1_new"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1_new")))
+            .unwrap();
         assert_eq!(engine.len(), 2);
     }
 
     #[test]
     fn max_keys_evicts_with_mset() {
         let engine = DashMapEngine::with_max_keys(2);
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
         // mset with 2 new keys should evict one existing
         // (implementation detail: mset calls set for each pair)
-        engine.set("k3".into(), ValueEntry::new(Bytes::from("v3"))).unwrap();
+        engine
+            .set("k3".into(), ValueEntry::new(Bytes::from("v3")))
+            .unwrap();
         assert_eq!(engine.len(), 2);
     }
 
     #[test]
     fn max_keys_mset_overwrite_does_not_evict() {
         let engine = DashMapEngine::with_max_keys(2);
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
         // Overwriting k1 should not trigger eviction
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1_new"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2_new"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1_new")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2_new")))
+            .unwrap();
         assert_eq!(engine.len(), 2);
     }
 
@@ -593,8 +627,12 @@ mod tests {
     #[test]
     fn mget_multiple_keys() {
         let engine = DashMapEngine::new();
-        engine.set("k1".into(), ValueEntry::new(Bytes::from("v1"))).unwrap();
-        engine.set("k2".into(), ValueEntry::new(Bytes::from("v2"))).unwrap();
+        engine
+            .set("k1".into(), ValueEntry::new(Bytes::from("v1")))
+            .unwrap();
+        engine
+            .set("k2".into(), ValueEntry::new(Bytes::from("v2")))
+            .unwrap();
         let results = engine.mget(&["k1", "k2", "missing"]);
         assert_eq!(results[0].as_ref().unwrap().data, Bytes::from("v1"));
         assert_eq!(results[1].as_ref().unwrap().data, Bytes::from("v2"));

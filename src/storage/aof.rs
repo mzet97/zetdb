@@ -42,21 +42,21 @@ impl AofWriter {
         {
             let mut batch = self.batch_buffer.lock().await;
             batch.extend_from_slice(entry);
-            
+
             // Only flush if batch is full
             if batch.len() < AOF_BATCH_SIZE {
                 return Ok(());
             }
             // Batch is full, need to flush
         }
-        
+
         // Slow path: flush batch + current entry
         self.flush_batch(entry).await
     }
-    
+
     async fn flush_batch(&self, entry: &[u8]) -> io::Result<()> {
         let mut file = self.file.lock().await;
-        
+
         // Write any pending batch
         {
             let mut batch = self.batch_buffer.lock().await;
@@ -65,7 +65,7 @@ impl AofWriter {
                 batch.clear();
             }
         }
-        
+
         // Write current entry
         file.write_all(entry)?;
 
@@ -94,7 +94,7 @@ impl AofWriter {
             file.write_all(&batch)?;
             batch.clear();
         }
-        
+
         if matches!(self.fsync_policy, crate::config::FsyncPolicy::Always) {
             file.sync_all()?;
         }
@@ -724,7 +724,10 @@ mod tests {
 
         // Read and dump first few bytes for debugging
         let data = fs::read(&tmp_path).unwrap();
-        eprintln!("tmp file content (first 20 bytes): {:?}", &data[..data.len().min(20)]);
+        eprintln!(
+            "tmp file content (first 20 bytes): {:?}",
+            &data[..data.len().min(20)]
+        );
 
         // rewrite_aof writes to {path}.tmp, not {path}
         let engine2 = DashMapEngine::new();
@@ -800,7 +803,7 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         // Write a truncated AOF file (just a header, no data)
-        fs::write(&path, &[CMD_SET, 0x00]).unwrap();
+        fs::write(&path, [CMD_SET, 0x00]).unwrap();
 
         let engine = DashMapEngine::new();
         let count = replay_aof(&engine, &path).unwrap();
