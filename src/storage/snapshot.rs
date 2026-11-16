@@ -17,10 +17,10 @@ const CRC_SIZE: usize = 4;
 /// Uses memmap2 for cross-platform memory mapping.
 fn mmap_file(path: &str) -> io::Result<&'static [u8]> {
     use memmap2::Mmap;
-    
+
     let file = fs::File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
-    
+
     // Leak the mmap to keep it alive for the lifetime of the program
     // This is safe because we only read from it and it's immutable
     let ptr = Box::into_raw(Box::new(mmap));
@@ -129,16 +129,16 @@ pub fn load_snapshot(engine: &DashMapEngine, path: &str) -> Result<usize, io::Er
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
     };
-    
+
     let file_size = metadata.len() as usize;
-    
+
     if file_size < HEADER_SIZE + CRC_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "snapshot too short",
         ));
     }
-    
+
     // Use memory-mapped I/O for files larger than 1MB, regular read for smaller files
     let data: Vec<u8> = if file_size > 1024 * 1024 {
         // Large file: use mmap
@@ -499,7 +499,8 @@ mod tests {
         pos += 2;
         let first_key = String::from_utf8_lossy(&data[pos..pos + first_key_len]).into_owned();
         pos += first_key_len;
-        let first_val_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let first_val_len =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         let _first_val = String::from_utf8_lossy(&data[pos..pos + first_val_len]).into_owned();
         pos += first_val_len;
@@ -524,7 +525,7 @@ mod tests {
         let k1 = engine2.get("k1").unwrap();
         let k2 = engine2.get("k2").unwrap();
         assert_eq!(loaded, 1);
-        
+
         // Verify that whichever key was first is loaded, and the other is not
         if first_key == "k1" {
             assert_eq!(k1.unwrap().data, Bytes::from("v1"));

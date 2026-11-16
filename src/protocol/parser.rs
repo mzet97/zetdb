@@ -715,31 +715,33 @@ fn read_resp_line_int(buf: &[u8], prefix: u8) -> Result<Option<(i64, usize)>, Pa
             if num_slice.is_empty() {
                 return Err(ParseError::SyntaxError("RESP: empty integer".into()));
             }
-            
+
             // Manual decimal parsing — much faster than from_utf8 + parse::<i64>
             let mut n: i64 = 0;
             let mut negative = false;
             let mut start = 0;
-            
+
             if num_slice[0] == b'-' {
                 negative = true;
                 start = 1;
                 if num_slice.len() == 1 {
-                    return Err(ParseError::SyntaxError("RESP: invalid negative integer".into()));
+                    return Err(ParseError::SyntaxError(
+                        "RESP: invalid negative integer".into(),
+                    ));
                 }
             }
-            
+
             for &b in &num_slice[start..] {
                 if !b.is_ascii_digit() {
                     return Err(ParseError::SyntaxError("RESP: expected integer".into()));
                 }
                 n = n * 10 + i64::from(b - b'0');
             }
-            
+
             if negative {
                 n = -n;
             }
-            
+
             Ok(Some((n, pos + 1)))
         }
     }

@@ -54,13 +54,23 @@ pub async fn handle_session(
 
     // Determine which optimized path to use based on features
     let has_aof = aof.is_some();
-    
+
     if !has_aof && !metrics_enabled && !use_write_timeout {
         // Ultra-fast path: no AOF, no metrics, no write timeout
         handle_session_fast(reader, writer, engine, read_timeout).await;
     } else {
         // Standard path with all features
-        handle_session_full(reader, writer, engine, read_timeout, write_timeout, aof, metrics_enabled, use_write_timeout).await;
+        handle_session_full(
+            reader,
+            writer,
+            engine,
+            read_timeout,
+            write_timeout,
+            aof,
+            metrics_enabled,
+            use_write_timeout,
+        )
+        .await;
     }
 
     if metrics_enabled {
@@ -119,11 +129,15 @@ async fn handle_session_fast(
                     Ok(FrameResult::Incomplete) => break,
                     Err(ParseError::SyntaxError(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::SyntaxError("syntax error".to_string())).write_to_resp(&mut write_buf);
+                        Response::Error(ResponseError::SyntaxError("syntax error".to_string()))
+                            .write_to_resp(&mut write_buf);
                     }
                     Err(ParseError::UnknownCommand(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::UnknownCommand("unknown command".to_string())).write_to_resp(&mut write_buf);
+                        Response::Error(ResponseError::UnknownCommand(
+                            "unknown command".to_string(),
+                        ))
+                        .write_to_resp(&mut write_buf);
                     }
                     Err(ParseError::EmptyCommand) => break,
                 }
@@ -144,11 +158,15 @@ async fn handle_session_fast(
                     Ok(FrameResultBorrowed::Incomplete) => break,
                     Err(ParseError::SyntaxError(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::SyntaxError("syntax error".to_string())).write_to(&mut write_buf);
+                        Response::Error(ResponseError::SyntaxError("syntax error".to_string()))
+                            .write_to(&mut write_buf);
                     }
                     Err(ParseError::UnknownCommand(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::UnknownCommand("unknown command".to_string())).write_to(&mut write_buf);
+                        Response::Error(ResponseError::UnknownCommand(
+                            "unknown command".to_string(),
+                        ))
+                        .write_to(&mut write_buf);
                     }
                     Err(ParseError::EmptyCommand) => break,
                 }
@@ -217,22 +235,22 @@ async fn handle_session_full(
                 match try_parse_frame(&read_buf) {
                     Ok(FrameResult::Complete { consumed, command }) => {
                         read_buf.advance(consumed);
-                        
+
                         // Only compute AOF entry if AOF is actually enabled
                         let aof_entry = if aof.is_some() && command.is_write() {
                             command.to_aof_entry()
                         } else {
                             None
                         };
-                        
+
                         let cmd_type = if metrics_enabled {
                             Some(command.command_type())
                         } else {
                             None
                         };
-                        
+
                         let response = dispatch(engine.as_ref(), command);
-                        
+
                         if let Some(ct) = cmd_type {
                             let m = metrics::metrics();
                             m.record_command(ct);
@@ -247,7 +265,7 @@ async fn handle_session_full(
                                 m.record_error();
                             }
                         }
-                        
+
                         if let (Some(entry), Some(ref aof_writer), true) =
                             (aof_entry, &aof, response.is_success())
                         {
@@ -255,7 +273,7 @@ async fn handle_session_full(
                                 // Silently ignore AOF errors in production
                             }
                         }
-                        
+
                         write_response(response, &mut write_buf, true);
                     }
                     Ok(FrameResult::Skip { consumed }) => {
@@ -264,11 +282,15 @@ async fn handle_session_full(
                     Ok(FrameResult::Incomplete) => break,
                     Err(ParseError::SyntaxError(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::SyntaxError("syntax error".to_string())).write_to_resp(&mut write_buf);
+                        Response::Error(ResponseError::SyntaxError("syntax error".to_string()))
+                            .write_to_resp(&mut write_buf);
                     }
                     Err(ParseError::UnknownCommand(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::UnknownCommand("unknown command".to_string())).write_to_resp(&mut write_buf);
+                        Response::Error(ResponseError::UnknownCommand(
+                            "unknown command".to_string(),
+                        ))
+                        .write_to_resp(&mut write_buf);
                     }
                     Err(ParseError::EmptyCommand) => break,
                 }
@@ -284,21 +306,21 @@ async fn handle_session_full(
                         } else {
                             None
                         };
-                        
+
                         let cmd_type = if metrics_enabled {
                             Some(command.command_type())
                         } else {
                             None
                         };
-                        
+
                         let owned_command = command.to_owned();
-                        
+
                         // Now advance buffer after borrowing is done
                         read_buf.advance(consumed);
-                        
+
                         // Use direct buffer dispatch (avoids Response enum allocation)
                         dispatch_to_buffer(engine.as_ref(), owned_command, &mut write_buf, false);
-                        
+
                         // Metrics tracking after dispatch
                         if let Some(ct) = cmd_type {
                             let m = metrics::metrics();
@@ -309,10 +331,8 @@ async fn handle_session_full(
                                 // This is a trade-off for performance
                             }
                         }
-                        
-                        if let (Some(entry), Some(ref aof_writer), true) =
-                            (aof_entry, &aof, true)
-                        {
+
+                        if let (Some(entry), Some(ref aof_writer), true) = (aof_entry, &aof, true) {
                             if aof_writer.append_raw(&entry).await.is_err() {
                                 // Silently ignore AOF errors in production
                             }
@@ -324,11 +344,15 @@ async fn handle_session_full(
                     Ok(FrameResultBorrowed::Incomplete) => break,
                     Err(ParseError::SyntaxError(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::SyntaxError("syntax error".to_string())).write_to(&mut write_buf);
+                        Response::Error(ResponseError::SyntaxError("syntax error".to_string()))
+                            .write_to(&mut write_buf);
                     }
                     Err(ParseError::UnknownCommand(_)) => {
                         skip_to_newline(&mut read_buf);
-                        Response::Error(ResponseError::UnknownCommand("unknown command".to_string())).write_to(&mut write_buf);
+                        Response::Error(ResponseError::UnknownCommand(
+                            "unknown command".to_string(),
+                        ))
+                        .write_to(&mut write_buf);
                     }
                     Err(ParseError::EmptyCommand) => break,
                 }

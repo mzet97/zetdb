@@ -6,19 +6,40 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub enum ParsedCommand<'a> {
     Ping,
-    Get { key: &'a [u8] },
-    Set { key: &'a [u8], value: &'a [u8], ttl: Option<Duration> },
-    Del { key: &'a [u8] },
-    Incr { key: &'a [u8] },
+    Get {
+        key: &'a [u8],
+    },
+    Set {
+        key: &'a [u8],
+        value: &'a [u8],
+        ttl: Option<Duration>,
+    },
+    Del {
+        key: &'a [u8],
+    },
+    Incr {
+        key: &'a [u8],
+    },
     Info,
     DbSize,
-    Exists { key: &'a [u8] },
-    Ttl { key: &'a [u8] },
-    Expire { key: &'a [u8], seconds: u64 },
+    Exists {
+        key: &'a [u8],
+    },
+    Ttl {
+        key: &'a [u8],
+    },
+    Expire {
+        key: &'a [u8],
+        seconds: u64,
+    },
     FlushDb,
     Keys,
-    Mget { keys: Vec<&'a [u8]> },
-    Mset { pairs: Vec<(&'a [u8], &'a [u8])> },
+    Mget {
+        keys: Vec<&'a [u8]>,
+    },
+    Mset {
+        pairs: Vec<(&'a [u8], &'a [u8])>,
+    },
 }
 
 impl<'a> ParsedCommand<'a> {

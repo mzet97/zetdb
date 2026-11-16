@@ -78,10 +78,11 @@ impl Metrics {
             let mut local = local.borrow_mut();
             local.commands_total += 1;
             local.commands_by_type[cmd as usize] += 1;
-            
+
             // Flush to global metrics every FLUSH_BATCH commands
             if local.commands_total % FLUSH_BATCH == 0 {
-                self.commands_total.fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                self.commands_total
+                    .fetch_add(FLUSH_BATCH, Ordering::Relaxed);
                 self.commands_by_type[cmd as usize].fetch_add(FLUSH_BATCH, Ordering::Relaxed);
                 local.commands_total -= FLUSH_BATCH;
                 local.commands_by_type[cmd as usize] -= FLUSH_BATCH;
@@ -92,17 +93,14 @@ impl Metrics {
     pub fn command_count(&self, cmd: CommandType) -> u64 {
         // Sum global + all thread-local counters
         let global = self.commands_by_type[cmd as usize].load(Ordering::Relaxed);
-        let local_sum: u64 = LOCAL_COUNTERS.with(|local| {
-            local.borrow().commands_by_type[cmd as usize]
-        });
+        let local_sum: u64 =
+            LOCAL_COUNTERS.with(|local| local.borrow().commands_by_type[cmd as usize]);
         global + local_sum
     }
 
     pub fn total_commands(&self) -> u64 {
         let global = self.commands_total.load(Ordering::Relaxed);
-        let local_sum: u64 = LOCAL_COUNTERS.with(|local| {
-            local.borrow().commands_total
-        });
+        let local_sum: u64 = LOCAL_COUNTERS.with(|local| local.borrow().commands_total);
         global + local_sum
     }
 
@@ -130,7 +128,8 @@ impl Metrics {
             let mut local = local.borrow_mut();
             local.keyspace_misses += 1;
             if local.keyspace_misses % FLUSH_BATCH == 0 {
-                self.keyspace_misses.fetch_add(FLUSH_BATCH, Ordering::Relaxed);
+                self.keyspace_misses
+                    .fetch_add(FLUSH_BATCH, Ordering::Relaxed);
                 local.keyspace_misses -= FLUSH_BATCH;
             }
         });
@@ -164,24 +163,29 @@ impl Metrics {
         LOCAL_COUNTERS.with(|local| {
             let mut local = local.borrow_mut();
             if local.commands_total > 0 {
-                self.commands_total.fetch_add(local.commands_total, Ordering::Relaxed);
+                self.commands_total
+                    .fetch_add(local.commands_total, Ordering::Relaxed);
                 local.commands_total = 0;
             }
             if local.keyspace_hits > 0 {
-                self.keyspace_hits.fetch_add(local.keyspace_hits, Ordering::Relaxed);
+                self.keyspace_hits
+                    .fetch_add(local.keyspace_hits, Ordering::Relaxed);
                 local.keyspace_hits = 0;
             }
             if local.keyspace_misses > 0 {
-                self.keyspace_misses.fetch_add(local.keyspace_misses, Ordering::Relaxed);
+                self.keyspace_misses
+                    .fetch_add(local.keyspace_misses, Ordering::Relaxed);
                 local.keyspace_misses = 0;
             }
             if local.errors_total > 0 {
-                self.errors_total.fetch_add(local.errors_total, Ordering::Relaxed);
+                self.errors_total
+                    .fetch_add(local.errors_total, Ordering::Relaxed);
                 local.errors_total = 0;
             }
             for i in 0..NUM_COMMAND_TYPES {
                 if local.commands_by_type[i] > 0 {
-                    self.commands_by_type[i].fetch_add(local.commands_by_type[i], Ordering::Relaxed);
+                    self.commands_by_type[i]
+                        .fetch_add(local.commands_by_type[i], Ordering::Relaxed);
                     local.commands_by_type[i] = 0;
                 }
             }

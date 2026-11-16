@@ -1,5 +1,5 @@
 # --- Stage 1: Build ---
-FROM rust:1.96-bookworm AS builder
+FROM rust:1.98-bookworm AS builder
 
 WORKDIR /usr/src/zetdb
 
@@ -27,4 +27,4 @@ COPY --from=builder /usr/src/zetdb/target/release/zetdb /usr/local/bin/zetdb
 EXPOSE 6379
 VOLUME ["/data"]
 
-ENTRYPOINT ["zetdb", "--snapshot-path", "/data/dump.zdb", "--aof-path", "/data/appendonly.zdb"]
+ENTRYPOINT ["zetdb", "--bind-addr", "0.0.0.0", "--snapshot-path", "/data/dump.zdb", "--aof-path", "/data/appendonly.zdb"]

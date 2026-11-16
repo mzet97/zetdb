@@ -18,7 +18,7 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(cpu_affinity::num_cpus);
-    
+
     log::info!("Starting ZetDB with {} worker threads", num_workers);
 
     let config = Config::parse();

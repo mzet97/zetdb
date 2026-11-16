@@ -111,7 +111,11 @@ pub fn dispatch_to_buffer(engine: &DashMapEngine, cmd: Command, buf: &mut BytesM
         Command::Exists { key } => {
             buf.extend_from_slice(b":");
             let mut itoa_buf = itoa::Buffer::new();
-            buf.extend_from_slice(itoa_buf.format(if engine.exists(&key) { 1 } else { 0 }).as_bytes());
+            buf.extend_from_slice(
+                itoa_buf
+                    .format(if engine.exists(&key) { 1 } else { 0 })
+                    .as_bytes(),
+            );
             buf.extend_from_slice(b"\r\n");
         }
         Command::Ttl { key } => {
@@ -123,7 +127,11 @@ pub fn dispatch_to_buffer(engine: &DashMapEngine, cmd: Command, buf: &mut BytesM
         Command::Expire { key, seconds } => {
             buf.extend_from_slice(b":");
             let mut itoa_buf = itoa::Buffer::new();
-            buf.extend_from_slice(itoa_buf.format(if engine.expire(&key, seconds) { 1 } else { 0 }).as_bytes());
+            buf.extend_from_slice(
+                itoa_buf
+                    .format(if engine.expire(&key, seconds) { 1 } else { 0 })
+                    .as_bytes(),
+            );
             buf.extend_from_slice(b"\r\n");
         }
         Command::FlushDb => {
