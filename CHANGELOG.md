@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Added
 
 - Hardening phase: zero unwrap in binary parsing, AOF race-free rewrite, write timeout, max_keys eviction
@@ -94,5 +96,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lock-free metrics counters
 - Docker support with multi-stage build
 
-[unreleased]: https://github.com/mzet97/zetdb/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/mzet97/zetdb/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mzet97/zetdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mzet97/zetdb/releases/tag/v0.1.0
